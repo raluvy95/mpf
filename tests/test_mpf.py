@@ -419,7 +419,7 @@ class TestConfiguration(unittest.TestCase):
 
 class TestPlayerInitialization(unittest.TestCase):
     @patch("mpf_core.player.MPV")
-    def test_mpv_inhibits_sleep(self, mock_mpv):
+    def test_mpv_inhibits_screensaver_only_during_playback(self, mock_mpv):
         from mpf_core.player import BlessedMusicPlayer
         player = BlessedMusicPlayer()
         # Simulate run mpv init snippet
@@ -430,7 +430,7 @@ class TestPlayerInitialization(unittest.TestCase):
             cache="yes",
             demuxer_max_bytes="25M",
             demuxer_readahead_secs="30",
-            stop_screensaver="always",
+            stop_screensaver="yes",
         )
         mock_mpv.assert_called_with(
             video=False,
@@ -439,7 +439,7 @@ class TestPlayerInitialization(unittest.TestCase):
             cache="yes",
             demuxer_max_bytes="25M",
             demuxer_readahead_secs="30",
-            stop_screensaver="always",
+            stop_screensaver="yes",
         )
 
 

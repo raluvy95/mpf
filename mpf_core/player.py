@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import subprocess
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -90,6 +91,7 @@ class BlessedMusicPlayer:
         self._spectrum_history: List[List[float]] = []
         self._spectrum_style = "waterfall"
         self._pending_seek: Optional[Tuple[str, float]] = None
+        self._power_inhibitor: Optional[subprocess.Popen[bytes]] = None
 
     async def run(self) -> None:
         """Run the main async event loop with Blessed context managers."""
@@ -102,7 +104,7 @@ class BlessedMusicPlayer:
                 cache="yes",
                 demuxer_max_bytes="25M",
                 demuxer_readahead_secs="30",
-                stop_screensaver="always",
+                stop_screensaver="yes",
             )
             self.mpv.bind_event("end-file", self._on_mpv_end_file)
             self.mpv.bind_event("file-loaded", self._on_mpv_file_loaded)
@@ -141,6 +143,7 @@ class BlessedMusicPlayer:
                 self.previewer.clear()
                 self.previewer.close()
                 self.spectrum.stop()
+                self._set_power_inhibit(False)
                 if self.mpv:
                     try:
                         self.mpv.terminate()
@@ -282,10 +285,12 @@ class BlessedMusicPlayer:
             try:
                 self._pending_seek = (track.id, start_pos) if start_pos > 1.0 else None
                 self.mpv.play(track.url)
+                self._set_power_inhibit(True)
             except Exception as err:
                 self._pending_seek = None
                 self._status_msg = f"Play Error: {err}"
                 self._is_buffering = False
+                self._set_power_inhibit(False)
                 logger.exception("Unable to play track %s", track.id)
         else:
             self._is_buffering = False
@@ -296,6 +301,41 @@ class BlessedMusicPlayer:
             self.spectrum.resume()
 
         self.previewer.request(track)
+
+    def _set_power_inhibit(self, active: bool) -> None:
+        if active:
+            if self._power_inhibitor is not None:
+                return
+            try:
+                self._power_inhibitor = subprocess.Popen(
+                    [
+                        "systemd-inhibit",
+                        "--what=sleep",
+                        "--who=MPF",
+                        "--why=Music playback",
+                        "--mode=block",
+                        "sleep",
+                        "infinity",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except OSError as err:
+                logger.warning("Unable to inhibit system sleep: %s", err)
+            return
+
+        process = self._power_inhibitor
+        self._power_inhibitor = None
+        if process is None:
+            return
+        try:
+            process.terminate()
+            process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=0.5)
+        except OSError as err:
+            logger.debug("Unable to stop system sleep inhibitor: %s", err)
 
     def _on_mpv_end_file(self, event: Dict[str, Any]) -> None:
         """Marshal MPV's IPC callback onto the asyncio/UI thread."""
@@ -345,6 +385,7 @@ class BlessedMusicPlayer:
         else:
             self._is_buffering = False
             self._is_paused = True
+            self._set_power_inhibit(False)
             if reason == "eof":
                 self._status_msg = "Playlist finished."
 
@@ -449,6 +490,7 @@ class BlessedMusicPlayer:
                 try:
                     self._is_paused = not getattr(self.mpv, "pause", False)
                     self.mpv.pause = self._is_paused
+                    self._set_power_inhibit(not self._is_paused)
                 except Exception as err:
                     self._status_msg = f"Pause failed: {err}"
                     logger.warning("MPV pause failed: %s", err)

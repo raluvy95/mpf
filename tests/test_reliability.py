@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 import tempfile
 import time
 import unittest
@@ -218,6 +219,58 @@ class TestPlayerFailureHandling(unittest.TestCase):
         self.player._handle_key("j")
 
         self.assertTrue(self.player._render_requested.is_set())
+
+
+class TestPowerInhibition(unittest.TestCase):
+    def setUp(self):
+        self.player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        self.player.queue = TrackQueue([Track("a", "A")])
+        self.player.mpv = MagicMock()
+        self.player.mpv.pause = False
+        self.player.previewer.request = MagicMock()
+
+    def tearDown(self):
+        self.player.previewer.close()
+
+    @patch("subprocess.Popen")
+    def test_playback_blocks_system_sleep(self, popen):
+        process = popen.return_value
+
+        self.player._play_index(0)
+
+        popen.assert_called_once_with(
+            [
+                "systemd-inhibit",
+                "--what=sleep",
+                "--who=MPF",
+                "--why=Music playback",
+                "--mode=block",
+                "sleep",
+                "infinity",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.assertIs(self.player._power_inhibitor, process)
+
+    @patch("subprocess.Popen")
+    def test_pause_releases_system_sleep(self, popen):
+        process = popen.return_value
+        self.player._play_index(0)
+
+        self.player._handle_key(" ")
+
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once_with(timeout=0.5)
+        self.assertIsNone(self.player._power_inhibitor)
+
+    @patch("subprocess.Popen", side_effect=FileNotFoundError("systemd-inhibit"))
+    def test_missing_systemd_inhibit_does_not_interrupt_playback(self, _popen):
+        self.player._play_index(0)
+
+        self.player.mpv.play.assert_called_once_with("https://youtu.be/a")
+        self.assertTrue(self.player._is_buffering)
+        self.assertIsNone(self.player._power_inhibitor)
 
 
 class TestMockedPlayerLifecycle(unittest.IsolatedAsyncioTestCase):
