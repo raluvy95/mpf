@@ -19,7 +19,13 @@ from mpf_core.cache import (
     save_cached_playlist,
     save_playback_state,
 )
-from mpf_core.config import load_default_playlist, save_default_playlist
+from mpf_core.config import (
+    VISUALIZER_STYLES,
+    load_default_playlist,
+    load_visualizer_preferences,
+    save_default_playlist,
+    save_visualizer_preferences,
+)
 from mpf_core.fetcher import (
     InvalidMediaURL,
     PlaylistFetchError,
@@ -40,7 +46,7 @@ class BlessedMusicPlayer:
     """Asyncio-driven TUI player using Blessed for true transparent terminal rendering."""
 
     SPECTRUM_CHARS = " .:-=+*#%@"
-    SPECTRUM_STYLES = ("waterfall", "bars", "braille", "waveform")
+    SPECTRUM_STYLES = VISUALIZER_STYLES
     BRAILLE_LEFT = (0x1, 0x2, 0x4, 0x40)
     BRAILLE_RIGHT = (0x8, 0x10, 0x20, 0x80)
     VISUALIZER_RENDER_INTERVAL = 1 / 15
@@ -66,7 +72,7 @@ class BlessedMusicPlayer:
         self._is_buffering = False
         self._is_loading_playlist = False
         self._volume = 100
-        self._show_visualizer = True
+        self._spectrum_style, self._show_visualizer = load_visualizer_preferences()
         self._show_preview = True
         self._status_msg = "Initializing..."
 
@@ -89,7 +95,6 @@ class BlessedMusicPlayer:
         self._list_height = 0
         self._last_render_size = (0, 0)
         self._spectrum_history: List[List[float]] = []
-        self._spectrum_style = "waterfall"
         self._pending_seek: Optional[Tuple[str, float]] = None
         self._power_inhibitor: Optional[subprocess.Popen[bytes]] = None
 
@@ -437,7 +442,7 @@ class BlessedMusicPlayer:
 
     def _handle_key(self, key: Any) -> None:
         self._render_requested.set()
-        key_name = getattr(key, "name", "")
+        key_name = getattr(key, "name", None) or ""
         # Input mode active (Live Fuzzy Search / URL prompt)
         if self._input_mode != "none":
             if key_name == "KEY_ENTER" or key == "\n" or key == "\r":
@@ -560,6 +565,7 @@ class BlessedMusicPlayer:
                     logger.warning("MPV mute failed: %s", err)
         elif key in ("v", "V"):
             self._show_visualizer = not self._show_visualizer
+            save_visualizer_preferences(self._spectrum_style, self._show_visualizer)
             if self._show_visualizer:
                 self.spectrum.resume()
             else:
@@ -569,6 +575,7 @@ class BlessedMusicPlayer:
         elif key in ("a", "A"):
             style_index = self.SPECTRUM_STYLES.index(self._spectrum_style)
             self._spectrum_style = self.SPECTRUM_STYLES[(style_index + 1) % len(self.SPECTRUM_STYLES)]
+            save_visualizer_preferences(self._spectrum_style, self._show_visualizer)
             self._spectrum_history.clear()
         elif key in ("t", "T"):
             self._show_preview = not self._show_preview

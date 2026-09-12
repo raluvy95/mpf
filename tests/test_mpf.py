@@ -22,7 +22,12 @@ from mpf_core import (
     load_cached_playlist,
     save_cached_playlist,
 )
-from mpf_core.config import load_default_playlist, save_default_playlist
+from mpf_core.config import (
+    load_default_playlist,
+    load_visualizer_preferences,
+    save_default_playlist,
+    save_visualizer_preferences,
+)
 
 
 class TestFormatTime(unittest.TestCase):
@@ -416,6 +421,23 @@ class TestConfiguration(unittest.TestCase):
             config.flush()
             self.assertEqual(load_default_playlist(config.name), "")
 
+    def test_visualizer_preferences_share_config_with_playlist(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = os.path.join(tmpdir, "mpf", "config.json")
+            playlist = "https://www.youtube.com/playlist?list=saved"
+            self.assertTrue(save_default_playlist(playlist, config))
+            self.assertTrue(save_visualizer_preferences("braille", False, config))
+            self.assertEqual(load_default_playlist(config), playlist)
+            self.assertEqual(load_visualizer_preferences(config), ("braille", False))
+            self.assertTrue(save_default_playlist(playlist, config))
+            self.assertEqual(load_visualizer_preferences(config), ("braille", False))
+
+    def test_invalid_visualizer_preferences_use_defaults(self):
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as config:
+            json.dump({"visualizer_style": "unknown", "show_visualizer": "false"}, config)
+            config.flush()
+            self.assertEqual(load_visualizer_preferences(config.name), ("waterfall", True))
+
 
 class TestPlayerInitialization(unittest.TestCase):
     @patch("mpf_core.player.MPV")
@@ -464,7 +486,9 @@ class TestTrackListMouseNavigation(unittest.TestCase):
 
 
 class TestSpectrumStyles(unittest.TestCase):
-    def test_a_cycles_spectrum_styles(self):
+    @patch("mpf_core.player.load_visualizer_preferences", return_value=("waterfall", True))
+    @patch("mpf_core.player.save_visualizer_preferences")
+    def test_a_cycles_spectrum_styles(self, _save, _load):
         from mpf_core.player import BlessedMusicPlayer
 
         player = BlessedMusicPlayer(auto_play=False)
@@ -479,6 +503,26 @@ class TestSpectrumStyles(unittest.TestCase):
         self.assertEqual(player._spectrum_style, "waveform")
         player._handle_key("a")
         self.assertEqual(player._spectrum_style, "waterfall")
+
+    def test_style_and_visibility_survive_restart(self):
+        from mpf_core.player import BlessedMusicPlayer
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = os.path.join(tmpdir, "config.json")
+            with (
+                patch("mpf_core.player.load_visualizer_preferences", side_effect=lambda: load_visualizer_preferences(config)),
+                patch("mpf_core.player.save_visualizer_preferences", side_effect=lambda style, visible: save_visualizer_preferences(style, visible, config)),
+            ):
+                player = BlessedMusicPlayer(auto_play=False)
+                self.addCleanup(player.previewer.close)
+                player._handle_key("a")
+                player._handle_key("v")
+                self.assertEqual(load_visualizer_preferences(config), ("bars", False))
+
+                restarted = BlessedMusicPlayer(auto_play=False)
+                self.addCleanup(restarted.previewer.close)
+                self.assertEqual(restarted._spectrum_style, "bars")
+                self.assertFalse(restarted._show_visualizer)
 
 
 if __name__ == "__main__":

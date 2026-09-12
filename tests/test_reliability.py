@@ -9,6 +9,8 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from blessed.keyboard import Keystroke
+
 from mpf_core.cache import (
     PlaybackState,
     load_cached_playlist,
@@ -169,6 +171,12 @@ class TestPlayerFailureHandling(unittest.TestCase):
         self.player._volume = 0
         self.player._handle_key("-")
         self.assertEqual(self.player._volume, 0)
+
+    def test_unnamed_key_does_not_interrupt_track_skipping(self):
+        self.player._handle_key(Keystroke("x"))
+        self.player._handle_key(Keystroke("n"))
+
+        self.assertEqual(self.player.queue.current_track.id, "b")
 
     def test_playback_state_volume_is_clamped_to_supported_range(self):
         self.assertEqual(PlaybackState.from_dict({"volume": 150}).volume, 100)
@@ -345,6 +353,7 @@ class TestRenderOptimization(unittest.TestCase):
         player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
         self.addCleanup(player.previewer.close)
 
+        player._show_visualizer = True
         self.assertEqual(player._render_delay(), 1 / 15)
         player._show_visualizer = False
         self.assertEqual(player._render_delay(), 0.1)
