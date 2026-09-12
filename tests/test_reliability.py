@@ -1,5 +1,6 @@
 """Regression tests for reliability and long-running resource behavior."""
 
+import io
 import json
 import os
 import subprocess
@@ -253,9 +254,9 @@ class TestPowerInhibition(unittest.TestCase):
                 "--who=MPF",
                 "--why=Music playback",
                 "--mode=block",
-                "sleep",
-                "infinity",
+                "cat",
             ],
+            stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -264,11 +265,12 @@ class TestPowerInhibition(unittest.TestCase):
     @patch("subprocess.Popen")
     def test_pause_releases_system_sleep(self, popen):
         process = popen.return_value
+        process.stdin = io.BytesIO()
         self.player._play_index(0)
 
         self.player._handle_key(" ")
 
-        process.terminate.assert_called_once()
+        self.assertTrue(process.stdin.closed)
         process.wait.assert_called_once_with(timeout=0.5)
         self.assertIsNone(self.player._power_inhibitor)
 

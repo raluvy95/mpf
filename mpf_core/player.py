@@ -319,9 +319,9 @@ class BlessedMusicPlayer:
                         "--who=MPF",
                         "--why=Music playback",
                         "--mode=block",
-                        "sleep",
-                        "infinity",
+                        "cat",
                     ],
+                    stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -334,11 +334,15 @@ class BlessedMusicPlayer:
         if process is None:
             return
         try:
-            process.terminate()
+            process.stdin.close()
             process.wait(timeout=0.5)
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=0.5)
+            process.terminate()
+            try:
+                process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=0.5)
         except OSError as err:
             logger.debug("Unable to stop system sleep inhibitor: %s", err)
 
