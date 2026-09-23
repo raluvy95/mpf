@@ -26,8 +26,11 @@
   - Commit: `5626da5 feat: use Nerd Font icons in dashboard`
 - [x] Ran the complete test, Ruff, and mypy checks after the final edits.
   - Result: 83 tests and 9 subtests passed; Ruff and mypy passed.
+- [x] Published current installation, usage, contribution, licensing, release,
+  and third-party documentation.
 
 ## Notes
 
 - The AppImage bundles MPF and Python dependencies but continues to require `mpv` as a Linux system dependency.
-- Existing untracked project documentation files were left untouched.
+- Project documentation reflects the current TUI, controls, packaging, and
+  development workflow.
