@@ -624,6 +624,34 @@ class TestPlayerQualityOfLife(unittest.TestCase):
         self.assertFalse(player._vim_mode)
         save_vim_mode_mock.assert_called_once_with(False, player.config_file)
 
+    def test_vim_mode_uses_hjkl_instead_of_arrow_keys(self):
+        from mpf_core.player import BlessedMusicPlayer
+
+        player = BlessedMusicPlayer(auto_play=False, vim_mode=True)
+        self.addCleanup(player.previewer.close)
+        player.mpv = MagicMock()
+        left = type("Key", (), {"name": "KEY_LEFT"})()
+
+        player._handle_key(left)
+        player.mpv.command.assert_not_called()
+
+        player._handle_key("h")
+        player.mpv.command.assert_called_once_with("seek", -5, "relative")
+
+    def test_standard_mode_uses_arrow_keys_instead_of_hjkl(self):
+        from mpf_core.player import BlessedMusicPlayer
+
+        player = BlessedMusicPlayer(auto_play=False, vim_mode=False)
+        self.addCleanup(player.previewer.close)
+        player.mpv = MagicMock()
+        left = type("Key", (), {"name": "KEY_LEFT"})()
+
+        player._handle_key("h")
+        player.mpv.command.assert_not_called()
+
+        player._handle_key(left)
+        player.mpv.command.assert_called_once_with("seek", -5, "relative")
+
 
 if __name__ == "__main__":
     unittest.main()

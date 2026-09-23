@@ -539,14 +539,18 @@ class BlessedMusicPlayer:
             self.queue.shuffle()
         elif key in ("r", "R"):
             self.queue.repeat_mode = self.queue.repeat_mode.next_mode()
-        elif key_name == "KEY_LEFT" or (self._vim_mode and key == "h"):
+        elif (self._vim_mode and key == "h") or (
+            not self._vim_mode and key_name == "KEY_LEFT"
+        ):
             if self.mpv:
                 try:
                     self.mpv.command("seek", -5, "relative")
                 except Exception as err:
                     self._status_msg = f"Seek failed: {err}"
                     logger.warning("MPV seek failed: %s", err)
-        elif key_name == "KEY_RIGHT" or (self._vim_mode and key == "l"):
+        elif (self._vim_mode and key == "l") or (
+            not self._vim_mode and key_name == "KEY_RIGHT"
+        ):
             if self.mpv:
                 try:
                     self.mpv.command("seek", 5, "relative")
@@ -619,9 +623,13 @@ class BlessedMusicPlayer:
         elif key in ("o", "O"):
             self._input_mode = "url"
             self._input_buffer = ""
-        elif key_name == "KEY_UP" or (self._vim_mode and key == "k"):
+        elif (self._vim_mode and key == "k") or (
+            not self._vim_mode and key_name == "KEY_UP"
+        ):
             self._move_list_selection(-1)
-        elif key_name == "KEY_DOWN" or (self._vim_mode and key == "j"):
+        elif (self._vim_mode and key == "j") or (
+            not self._vim_mode and key_name == "KEY_DOWN"
+        ):
             self._move_list_selection(1)
         elif key_name == "KEY_ENTER" or key == "\n" or key == "\r":
             filtered = self.queue.filtered_tracks
@@ -783,18 +791,16 @@ class BlessedMusicPlayer:
             "   r           Cycle repeat mode",
             "   m           Mute",
             "   + / -       Change volume",
-            "   Left/Right  Seek 5 seconds",
+            f"   {'h / l' if self._vim_mode else 'Left/Right':11} Seek 5 seconds",
             "   [ / ]       Seek 30 seconds",
             "",
             " Library",
-            "   Up/Down     Browse tracks",
+            f"   {'j / k' if self._vim_mode else 'Up/Down':11} Browse tracks",
             "   Enter       Play selected track",
             "   /           Search tracks",
             "   o           Open a YouTube URL",
             "",
             f" Vim mode: {'enabled' if self._vim_mode else 'disabled'} (V toggles it)",
-            "   j / k       Browse down / up",
-            "   h / l       Seek backward / forward",
             "",
             "   v           Toggle visualizer",
             "   a           Change visualizer style",
@@ -941,9 +947,12 @@ class BlessedMusicPlayer:
         footer_lines: List[str] = []
         current_line = ""
         footer_hints = list(self.FOOTER_HINTS)
-        footer_hints.insert(4, "j/k browse" if self._vim_mode else "V vim mode")
         if self._vim_mode:
-            footer_hints.insert(9, "h/l seek")
+            footer_hints = [
+                hint.replace("↑/↓ browse", "j/k browse").replace("←/→ seek", "h/l seek")
+                for hint in footer_hints
+            ]
+        footer_hints.insert(1, "V key mode")
         for hint in footer_hints:
             decorated = f"[{hint.split(' ', 1)[0]}]" + (f" {hint.split(' ', 1)[1]}" if " " in hint else "")
             candidate = (current_line + "  " + decorated) if current_line else (" " + decorated)
