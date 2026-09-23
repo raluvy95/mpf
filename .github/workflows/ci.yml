@@ -1,0 +1,79 @@
+name: MPF CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests and static checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Run Ruff
+        run: python -m ruff check .
+
+      - name: Run mypy
+        run: python -m mypy mpf.py mpf_core
+
+  appimage:
+    name: Linux AppImage
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install Linux runtime and image tools
+        run: sudo apt-get update && sudo apt-get install --yes mpv squashfs-tools
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Download appimagetool
+        run: |
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool"
+
+      - name: Build AppImage
+        env:
+          APPIMAGETOOL: ${{ runner.temp }}/appimagetool
+          MPF_VERSION: 0.1.0
+        run: bash scripts/build_appimage.sh
+
+      - name: Smoke-test AppImage
+        run: ./dist/mpf-0.1.0-x86_64.AppImage --help
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpf-linux-x86_64-appimage
+          path: dist/mpf-0.1.0-x86_64.AppImage
+          if-no-files-found: error
