@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/raluvy95/mpf/compare/v1.0.1...v1.0.2) (2026-09-23)
+
+
+### Bug Fixes
+
+* publish AppImage releases ([b331607](https://github.com/raluvy95/mpf/commit/b33160794c919b2e4f1093a3ffc70482b7326fb0))
+
 ## [1.0.1](https://github.com/raluvy95/mpf/compare/v1.0.0...v1.0.1) (2026-09-23)
 
 
