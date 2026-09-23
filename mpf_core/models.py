@@ -152,6 +152,14 @@ class RepeatMode(enum.Enum):
     ALL = "All"
     ONE = "One"
 
+    @property
+    def icon(self) -> str:
+        return {
+            RepeatMode.OFF: "󰑗",
+            RepeatMode.ALL: "󰑖",
+            RepeatMode.ONE: "󰑘",
+        }[self]
+
     def next_mode(self) -> "RepeatMode":
         modes = [RepeatMode.OFF, RepeatMode.ALL, RepeatMode.ONE]
         curr_idx = modes.index(self)

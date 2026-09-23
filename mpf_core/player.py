@@ -821,6 +821,21 @@ class BlessedMusicPlayer:
         marker = round(max(0.0, min(1.0, progress)) * (width - 1))
         return "━" * marker + "●" + "─" * (width - marker - 1)
 
+    def _dashboard_summary(self) -> str:
+        volume_icon = "󰝟" if self._is_muted else ""
+        return (
+            f"{volume_icon} {self._volume}%  ·  {self.queue.repeat_mode.icon}"
+            f"  ·  󰎆 {len(self.queue.tracks)}"
+        )
+
+    def _queue_heading(self, filtered_count: int) -> str:
+        count = (
+            f"{filtered_count}/{len(self.queue.tracks)}"
+            if self._input_buffer
+            else str(len(self.queue.tracks))
+        )
+        return f"  {count} "
+
     def _render(self) -> None:
         term = self.term
         h, w = term.height, term.width
@@ -855,8 +870,7 @@ class BlessedMusicPlayer:
         else:
             state = "■ IDLE"
 
-        vol_str = "MUTED" if self._is_muted else f"VOL {self._volume}%"
-        summary = f"{vol_str}  ·  {self.queue.repeat_mode.value.upper()}  ·  {len(self.queue.tracks)} TRACKS"
+        summary = self._dashboard_summary()
         brand = f" MPF  {state}"
         gap = max(2, w - len(brand) - len(summary) - 1)
         header_text = brand + (" " * gap + summary if gap > 2 else "")
@@ -866,7 +880,7 @@ class BlessedMusicPlayer:
         title = curr_track.title if curr_track else "Nothing playing"
         out.append(
             term.move_xy(0, row)
-            + term.cyan(" NOW PLAYING  ")
+            + term.cyan(" 󰎈  ")
             + term.bold_white(title[: max(0, w - 15)])
             + term.clear_eol
         )
@@ -896,12 +910,12 @@ class BlessedMusicPlayer:
         show_preview_box = self._show_preview and w >= 55 and h >= 18
 
         if self._show_visualizer and h >= 18:
-            panel_label = " ARTWORK" if show_preview_box else ""
+            panel_label = " " if show_preview_box else ""
             viz_label_col = preview_width + 4 if show_preview_box else 2
             out.append(term.move_xy(0, row) + term.cyan(panel_label))
             out.append(
                 term.move_xy(viz_label_col, row)
-                + term.cyan(f"SPECTRUM  ·  {self._spectrum_style.upper()}")
+                + term.cyan(f"󰓃  {self._spectrum_style.upper()}")
                 + term.clear_eol
             )
             row += 1
@@ -970,11 +984,7 @@ class BlessedMusicPlayer:
         self._list_height = list_height
         self._move_list_selection(0)
 
-        list_header = (
-            f" QUEUE  {len(filtered)} OF {len(self.queue.tracks)} "
-            if self._input_buffer
-            else f" QUEUE  {len(self.queue.tracks)} TRACKS "
-        )
+        list_header = self._queue_heading(len(filtered))
         out.append(
             term.move_xy(0, row)
             + term.magenta(list_header + "─" * max(0, w - len(list_header) - 1))

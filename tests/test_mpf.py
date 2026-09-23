@@ -105,6 +105,13 @@ class TestTrackModel(unittest.TestCase):
 
 
 class TestRepeatMode(unittest.TestCase):
+    def test_values_remain_cache_compatible_and_expose_icons(self):
+        self.assertEqual(RepeatMode.OFF.value, "Off")
+        self.assertEqual(RepeatMode.ALL.value, "All")
+        self.assertEqual(RepeatMode.ONE.value, "One")
+        self.assertEqual(RepeatMode("All"), RepeatMode.ALL)
+        self.assertEqual({mode.icon for mode in RepeatMode}, {"󰑗", "󰑖", "󰑘"})
+
     def test_cycling(self):
         m = RepeatMode.OFF
         m = m.next_mode()
@@ -601,6 +608,22 @@ class TestPlayerQualityOfLife(unittest.TestCase):
         self.assertEqual(BlessedMusicPlayer._progress_meter(4, -1.0), "●───")
         self.assertEqual(BlessedMusicPlayer._progress_meter(4, 2.0), "━━━●")
 
+    def test_dashboard_uses_icons_without_verbose_labels(self):
+        from mpf_core.player import BlessedMusicPlayer
+
+        player = BlessedMusicPlayer(auto_play=False, vim_mode=True)
+        self.addCleanup(player.previewer.close)
+        player.queue.set_tracks([Track("1", "One"), Track("2", "Two")])
+        player._volume = 42
+
+        self.assertEqual(player._dashboard_summary(), " 42%  ·  󰑖  ·  󰎆 2")
+        self.assertEqual(player._queue_heading(2), "  2 ")
+        player._input_buffer = "one"
+        self.assertEqual(player._queue_heading(1), "  1/2 ")
+
+        player._is_muted = True
+        self.assertEqual(player._dashboard_summary(), "󰝟 42%  ·  󰑖  ·  󰎆 2")
+
     def test_help_overlay_opens_and_closes_with_question_mark_or_escape(self):
         from mpf_core.player import BlessedMusicPlayer
 
@@ -616,7 +639,7 @@ class TestPlayerQualityOfLife(unittest.TestCase):
     def test_uppercase_v_toggles_vim_mode(self, save_vim_mode_mock):
         from mpf_core.player import BlessedMusicPlayer
 
-        player = BlessedMusicPlayer(auto_play=False)
+        player = BlessedMusicPlayer(auto_play=False, vim_mode=True)
         self.addCleanup(player.previewer.close)
 
         self.assertTrue(player._vim_mode)
