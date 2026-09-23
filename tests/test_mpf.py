@@ -24,8 +24,10 @@ from mpf_core import (
 )
 from mpf_core.config import (
     load_default_playlist,
+    load_vim_mode,
     load_visualizer_preferences,
     save_default_playlist,
+    save_vim_mode,
     save_visualizer_preferences,
 )
 
@@ -395,6 +397,24 @@ class TestCLIArgs(unittest.TestCase):
         self.assertEqual(args.url, DEFAULT_PLAYLIST_URL)
         self.assertFalse(args.no_auto_play)
 
+    def test_extended_options(self):
+        args = parse_cli_args(
+            [
+                "--config",
+                "/tmp/mpf.json",
+                "--no-auto-play",
+                "--no-preview",
+                "--no-visualizer",
+                "--no-vim",
+                "https://youtu.be/example",
+            ]
+        )
+        self.assertEqual(args.config, "/tmp/mpf.json")
+        self.assertTrue(args.no_auto_play)
+        self.assertTrue(args.no_preview)
+        self.assertTrue(args.no_visualizer)
+        self.assertFalse(args.vim)
+
 
 class TestConfiguration(unittest.TestCase):
     def test_saves_loaded_default_playlist(self):
@@ -437,6 +457,19 @@ class TestConfiguration(unittest.TestCase):
             json.dump({"visualizer_style": "unknown", "show_visualizer": "false"}, config)
             config.flush()
             self.assertEqual(load_visualizer_preferences(config.name), ("waterfall", True))
+
+    def test_vim_mode_preference_round_trip_and_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = os.path.join(tmpdir, "config.json")
+            self.assertTrue(load_vim_mode(config))
+            self.assertTrue(save_vim_mode(False, config))
+            self.assertFalse(load_vim_mode(config))
+
+    def test_invalid_vim_mode_uses_enabled_default(self):
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as config:
+            json.dump({"vim_mode": "false"}, config)
+            config.flush()
+            self.assertTrue(load_vim_mode(config.name))
 
 
 class TestPlayerInitialization(unittest.TestCase):
@@ -510,8 +543,16 @@ class TestSpectrumStyles(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = os.path.join(tmpdir, "config.json")
             with (
-                patch("mpf_core.player.load_visualizer_preferences", side_effect=lambda: load_visualizer_preferences(config)),
-                patch("mpf_core.player.save_visualizer_preferences", side_effect=lambda style, visible: save_visualizer_preferences(style, visible, config)),
+                patch(
+                    "mpf_core.player.load_visualizer_preferences",
+                    side_effect=lambda _config_file: load_visualizer_preferences(config),
+                ),
+                patch(
+                    "mpf_core.player.save_visualizer_preferences",
+                    side_effect=lambda style, visible, _config_file: save_visualizer_preferences(
+                        style, visible, config
+                    ),
+                ),
             ):
                 player = BlessedMusicPlayer(auto_play=False)
                 self.addCleanup(player.previewer.close)
@@ -522,7 +563,32 @@ class TestSpectrumStyles(unittest.TestCase):
                 restarted = BlessedMusicPlayer(auto_play=False)
                 self.addCleanup(restarted.previewer.close)
                 self.assertEqual(restarted._spectrum_style, "bars")
-                self.assertFalse(restarted._show_visualizer)
+        self.assertFalse(restarted._show_visualizer)
+
+
+class TestPlayerQualityOfLife(unittest.TestCase):
+    def test_help_overlay_opens_and_closes_with_question_mark_or_escape(self):
+        from mpf_core.player import BlessedMusicPlayer
+
+        player = BlessedMusicPlayer(auto_play=False)
+        self.addCleanup(player.previewer.close)
+
+        player._handle_key("?")
+        self.assertTrue(player._show_help)
+        player._handle_key("\x1b")
+        self.assertFalse(player._show_help)
+
+    @patch("mpf_core.player.save_vim_mode")
+    def test_uppercase_v_toggles_vim_mode(self, save_vim_mode_mock):
+        from mpf_core.player import BlessedMusicPlayer
+
+        player = BlessedMusicPlayer(auto_play=False)
+        self.addCleanup(player.previewer.close)
+
+        self.assertTrue(player._vim_mode)
+        player._handle_key("V")
+        self.assertFalse(player._vim_mode)
+        save_vim_mode_mock.assert_called_once_with(False, player.config_file)
 
 
 if __name__ == "__main__":

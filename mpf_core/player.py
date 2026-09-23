@@ -22,8 +22,10 @@ from mpf_core.cache import (
 from mpf_core.config import (
     VISUALIZER_STYLES,
     load_default_playlist,
+    load_vim_mode,
     load_visualizer_preferences,
     save_default_playlist,
+    save_vim_mode,
     save_visualizer_preferences,
 )
 from mpf_core.fetcher import (
@@ -33,6 +35,7 @@ from mpf_core.fetcher import (
     validate_media_url,
 )
 from mpf_core.models import RepeatMode, TrackQueue, format_time
+from mpf_core.paths import CONFIG_FILE
 from mpf_core.previewer import KittyPreviewer
 from mpf_core.visualizer import PipeWireSpectrumAnalyzer
 
@@ -52,14 +55,23 @@ class BlessedMusicPlayer:
     VISUALIZER_RENDER_INTERVAL = 1 / 15
     IDLE_RENDER_INTERVAL = 0.1
     FOOTER_HINTS = [
-        "[Space]Pause", "[n/p]Next/Prev", "[s]Shuffle", "[r]Repeat",
-        "[←/→]Seek", "[+/-]Vol", "[/]Fuzzy", "[o]URL",
-        "[v]Viz", "[a]Style", "[t]Thumb", "[q]Quit",
+        "[?] Help", "[Space] Play/Pause", "[Enter] Play", "[↑/↓] Browse",
+        "[/] Search", "[o] Open", "[n/p] Track", "[←/→] Seek", "[+/-] Volume",
+        "[q] Quit",
     ]
 
-    def __init__(self, playlist_url: str = DEFAULT_PLAYLIST_URL, auto_play: bool = True) -> None:
+    def __init__(
+        self,
+        playlist_url: str = DEFAULT_PLAYLIST_URL,
+        auto_play: bool = True,
+        config_file: str = CONFIG_FILE,
+        show_visualizer: Optional[bool] = None,
+        show_preview: bool = True,
+        vim_mode: Optional[bool] = None,
+    ) -> None:
         self.term = Terminal()
-        self.playlist_url = playlist_url or load_default_playlist()
+        self.config_file = config_file
+        self.playlist_url = playlist_url or load_default_playlist(config_file)
         self.auto_play = auto_play
         self.queue = TrackQueue()
         self.mpv: Optional[MPV] = None
@@ -72,8 +84,11 @@ class BlessedMusicPlayer:
         self._is_buffering = False
         self._is_loading_playlist = False
         self._volume = 100
-        self._spectrum_style, self._show_visualizer = load_visualizer_preferences()
-        self._show_preview = True
+        self._spectrum_style, configured_visualizer = load_visualizer_preferences(config_file)
+        self._show_visualizer = configured_visualizer if show_visualizer is None else show_visualizer
+        self._show_preview = show_preview
+        self._vim_mode = load_vim_mode(config_file) if vim_mode is None else vim_mode
+        self._show_help = False
         self._status_msg = "Initializing..."
 
         # UI state
@@ -191,7 +206,7 @@ class BlessedMusicPlayer:
         if cached:
             self.queue.set_tracks(cached)
             self._status_msg = f"Loaded {len(cached)} tracks (cache)."
-            if not save_default_playlist(url):
+            if not save_default_playlist(url, self.config_file):
                 logger.warning("Unable to persist loaded playlist %s", url)
 
             target_idx = 0
@@ -236,7 +251,7 @@ class BlessedMusicPlayer:
                 selected_track = filtered[self._selected_list_idx][1]
 
             cache_saved = save_cached_playlist(url, tracks)
-            if not save_default_playlist(url):
+            if not save_default_playlist(url, self.config_file):
                 logger.warning("Unable to persist loaded playlist %s", url)
             runtime_tracks = list(tracks)
             if active_track and all(track.id != active_track.id for track in runtime_tracks):
@@ -492,9 +507,18 @@ class BlessedMusicPlayer:
                     self._scroll_offset = 0
             return
 
+        if self._show_help:
+            if key in ("?", "\x1b") or key_name == "KEY_ESCAPE":
+                self._show_help = False
+            elif key in ("q", "Q"):
+                self._running = False
+            return
+
         # Player navigation shortcuts
         if key in ("q", "Q"):
             self._running = False
+        elif key == "?":
+            self._show_help = True
         elif key == " ":
             if self.mpv:
                 try:
@@ -516,14 +540,14 @@ class BlessedMusicPlayer:
             self.queue.shuffle()
         elif key in ("r", "R"):
             self.queue.repeat_mode = self.queue.repeat_mode.next_mode()
-        elif key_name == "KEY_LEFT" or key == "h":
+        elif key_name == "KEY_LEFT" or (self._vim_mode and key == "h"):
             if self.mpv:
                 try:
                     self.mpv.command("seek", -5, "relative")
                 except Exception as err:
                     self._status_msg = f"Seek failed: {err}"
                     logger.warning("MPV seek failed: %s", err)
-        elif key_name == "KEY_RIGHT" or key == "l":
+        elif key_name == "KEY_RIGHT" or (self._vim_mode and key == "l"):
             if self.mpv:
                 try:
                     self.mpv.command("seek", 5, "relative")
@@ -568,19 +592,22 @@ class BlessedMusicPlayer:
                 except Exception as err:
                     self._status_msg = f"Mute failed: {err}"
                     logger.warning("MPV mute failed: %s", err)
-        elif key in ("v", "V"):
+        elif key == "v":
             self._show_visualizer = not self._show_visualizer
-            save_visualizer_preferences(self._spectrum_style, self._show_visualizer)
+            save_visualizer_preferences(self._spectrum_style, self._show_visualizer, self.config_file)
             if self._show_visualizer:
                 self.spectrum.resume()
             else:
                 self.spectrum.pause()
                 self.previewer.clear()
             print(self.term.clear, end="", flush=True)
+        elif key == "V":
+            self._vim_mode = not self._vim_mode
+            save_vim_mode(self._vim_mode, self.config_file)
         elif key in ("a", "A"):
             style_index = self.SPECTRUM_STYLES.index(self._spectrum_style)
             self._spectrum_style = self.SPECTRUM_STYLES[(style_index + 1) % len(self.SPECTRUM_STYLES)]
-            save_visualizer_preferences(self._spectrum_style, self._show_visualizer)
+            save_visualizer_preferences(self._spectrum_style, self._show_visualizer, self.config_file)
             self._spectrum_history.clear()
         elif key in ("t", "T"):
             self._show_preview = not self._show_preview
@@ -593,9 +620,9 @@ class BlessedMusicPlayer:
         elif key in ("o", "O"):
             self._input_mode = "url"
             self._input_buffer = ""
-        elif key_name == "KEY_UP" or key == "k":
+        elif key_name == "KEY_UP" or (self._vim_mode and key == "k"):
             self._move_list_selection(-1)
-        elif key_name == "KEY_DOWN" or key == "j":
+        elif key_name == "KEY_DOWN" or (self._vim_mode and key == "j"):
             self._move_list_selection(1)
         elif key_name == "KEY_ENTER" or key == "\n" or key == "\r":
             filtered = self.queue.filtered_tracks
@@ -732,6 +759,8 @@ class BlessedMusicPlayer:
             self._is_loading_playlist,
             self._is_buffering,
             self._show_preview,
+            self._vim_mode,
+            self._show_help,
             self._volume,
             self.queue.repeat_mode,
             self._status_msg,
@@ -740,6 +769,45 @@ class BlessedMusicPlayer:
             self.previewer.generation,
             animated_frame,
         )
+
+    def _render_help(self) -> None:
+        """Render a compact keyboard reference without leaving the player."""
+        term = self.term
+        width = term.width
+        lines = [
+            " MPF HELP",
+            "",
+            " Playback",
+            "   Space       Play or pause",
+            "   n / p       Next or previous track",
+            "   s           Shuffle queue",
+            "   r           Cycle repeat mode",
+            "   m           Mute",
+            "   + / -       Change volume",
+            "   Left/Right  Seek 5 seconds",
+            "   [ / ]       Seek 30 seconds",
+            "",
+            " Library",
+            "   Up/Down     Browse tracks",
+            "   Enter       Play selected track",
+            "   /           Search tracks",
+            "   o           Open a YouTube URL",
+            "",
+            f" Vim mode: {'enabled' if self._vim_mode else 'disabled'} (V toggles it)",
+            "   j / k       Browse down / up",
+            "   h / l       Seek backward / forward",
+            "",
+            "   v           Toggle visualizer",
+            "   a           Change visualizer style",
+            "   t           Toggle thumbnail preview",
+            "   ? / Esc     Close help",
+            "   q           Quit",
+        ]
+        output = [term.clear + term.home]
+        for row, line in enumerate(lines[: term.height]):
+            style = term.bold_cyan if row == 0 else term.white
+            output.append(term.move_xy(2, row) + style(line[: max(0, width - 3)]) + term.clear_eol)
+        print("".join(output), end="", flush=True)
 
     def _render(self) -> None:
         term = self.term
@@ -750,6 +818,10 @@ class BlessedMusicPlayer:
         if h < 10 or w < 30:
             self._list_height = 0
             print(term.home + term.red("Terminal window too small!"), end="", flush=True)
+            return
+
+        if self._show_help:
+            self._render_help()
             return
 
         out: List[str] = [term.home]
@@ -847,7 +919,11 @@ class BlessedMusicPlayer:
         # Build footer lines that fit within terminal width
         footer_lines: List[str] = []
         current_line = ""
-        for hint in self.FOOTER_HINTS:
+        footer_hints = list(self.FOOTER_HINTS)
+        footer_hints.insert(4, "[j/k] Browse" if self._vim_mode else "[V] Vim mode")
+        if self._vim_mode:
+            footer_hints.insert(9, "[h/l] Seek")
+        for hint in footer_hints:
             candidate = (current_line + " " + hint) if current_line else (" " + hint)
             if current_line and len(candidate) > w - 1:
                 footer_lines.append(current_line)

@@ -13,6 +13,7 @@ from mpf_core.paths import CONFIG_FILE
 
 logger = logging.getLogger(__name__)
 VISUALIZER_STYLES = ("waterfall", "bars", "braille", "waveform")
+DEFAULT_VIM_MODE = True
 
 
 def _load_config(config_file: str) -> Dict[str, Any]:
@@ -94,4 +95,19 @@ def save_visualizer_preferences(style: str, visible: bool, config_file: str = CO
     config = _load_config(config_file)
     config["visualizer_style"] = style
     config["show_visualizer"] = visible
+    return _save_config(config, config_file)
+
+
+def load_vim_mode(config_file: str = CONFIG_FILE) -> bool:
+    """Return whether Vim navigation keys are enabled."""
+    value = _load_config(config_file).get("vim_mode")
+    return value if isinstance(value, bool) else DEFAULT_VIM_MODE
+
+
+def save_vim_mode(enabled: bool, config_file: str = CONFIG_FILE) -> bool:
+    """Persist the Vim navigation preference without replacing other settings."""
+    if not isinstance(enabled, bool):
+        return False
+    config = _load_config(config_file)
+    config["vim_mode"] = enabled
     return _save_config(config, config_file)
