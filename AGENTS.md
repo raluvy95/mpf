@@ -7,3 +7,4 @@
 - These are naming and versioning conventions; pushing a SemVer tag publishes a
   GitHub Release with generated notes through GitHub Actions.
 - Do not commit local virtual environments such as `.venv/`.
+- Always pull and resolve upstream changes before creating a commit.
