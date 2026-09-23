@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.3](https://github.com/raluvy95/mpf/compare/v1.0.2...v1.0.3) (2026-09-23)
+
+
+### Bug Fixes
+
+* isolate system mpv from AppImage libraries ([c254c8c](https://github.com/raluvy95/mpf/commit/c254c8cd387ee6f0680e2e7ccf9c128de399105b))
+
+
+### Documentation
+
+* document manual GitHub push policy ([1e47095](https://github.com/raluvy95/mpf/commit/1e47095f897bdd1e15783a49b1f4326cbbdfd5a4))
+* require pulling before commits ([3ca794b](https://github.com/raluvy95/mpf/commit/3ca794b2e280658277dde1216429dd4a30cef8a2))
+
 ## [1.0.2](https://github.com/raluvy95/mpf/compare/v1.0.1...v1.0.2) (2026-09-23)
 
 
