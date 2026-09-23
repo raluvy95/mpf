@@ -55,9 +55,8 @@ class BlessedMusicPlayer:
     VISUALIZER_RENDER_INTERVAL = 1 / 15
     IDLE_RENDER_INTERVAL = 0.1
     FOOTER_HINTS = [
-        "[?] Help", "[Space] Play/Pause", "[Enter] Play", "[↑/↓] Browse",
-        "[/] Search", "[o] Open", "[n/p] Track", "[←/→] Seek", "[+/-] Volume",
-        "[q] Quit",
+        "? help", "space pause", "enter play", "↑/↓ browse", "/ search",
+        "o open", "n/p track", "←/→ seek", "+/- volume", "q quit",
     ]
 
     def __init__(
@@ -809,6 +808,13 @@ class BlessedMusicPlayer:
             output.append(term.move_xy(2, row) + style(line[: max(0, width - 3)]) + term.clear_eol)
         print("".join(output), end="", flush=True)
 
+    @staticmethod
+    def _progress_meter(width: int, progress: float) -> str:
+        """Return a fixed-width dashboard progress meter."""
+        width = max(1, width)
+        marker = round(max(0.0, min(1.0, progress)) * (width - 1))
+        return "━" * marker + "●" + "─" * (width - marker - 1)
+
     def _render(self) -> None:
         term = self.term
         h, w = term.height, term.width
@@ -830,55 +836,70 @@ class BlessedMusicPlayer:
         # Animated Spinner
         spinner = SPINNER_FRAMES[int(time.time() * 10) % len(SPINNER_FRAMES)]
 
-        # 1. Header & Now Playing
+        # 1. Dashboard header and now-playing details
         curr_track = self.queue.current_track
         if self._is_loading_playlist:
             state = f"{spinner} LOADING"
         elif self._is_buffering and curr_track:
             state = f"{spinner} BUFFERING"
         elif self._is_paused:
-            state = "⏸ PAUSED"
+            state = "Ⅱ PAUSED"
         elif curr_track:
             state = "▶ PLAYING"
         else:
-            state = "⏹ STOPPED"
+            state = "■ IDLE"
 
-        title_str = curr_track.title if curr_track else self._status_msg
-        header_text = f" {state} │ {title_str}"
+        vol_str = "MUTED" if self._is_muted else f"VOL {self._volume}%"
+        summary = f"{vol_str}  ·  {self.queue.repeat_mode.value.upper()}  ·  {len(self.queue.tracks)} TRACKS"
+        brand = f" MPF  {state}"
+        gap = max(2, w - len(brand) - len(summary) - 1)
+        header_text = brand + (" " * gap + summary if gap > 2 else "")
         out.append(term.move_xy(0, row) + term.bold_cyan(header_text[: w - 1]) + term.clear_eol)
         row += 1
 
-        # 2. Meta line
-        vol_str = "MUTED" if self._is_muted else f"{self._volume}%"
-        rep_str = self.queue.repeat_mode.value
-        meta_text = f" Vol: {vol_str} │ Repeat: {rep_str} │ Tracks: {len(self.queue.tracks)}"
-        if curr_track and curr_track.uploader:
-            meta_text += f" │ Artist: {curr_track.uploader}"
-        out.append(term.move_xy(0, row) + term.white(meta_text[: w - 1]) + term.clear_eol)
-        row += 1
-
-        # 3. Timeline / Progress Bar
-        time_str = f" {format_time(self._time_pos)} / {format_time(self._duration)} "
-        bar_width = max(5, w - len(time_str) - 3)
-        pct = (self._time_pos / self._duration) if self._duration > 0 else 0.0
-        pct = max(0.0, min(1.0, pct))
-        filled_len = int(pct * bar_width)
-        bar_str = "━" * filled_len + "╸" + "─" * max(0, bar_width - filled_len - 1)
-
+        title = curr_track.title if curr_track else "Nothing playing"
         out.append(
             term.move_xy(0, row)
-            + term.white(time_str)
-            + term.green(f"[{bar_str}]"[: w - len(time_str) - 1])
+            + term.cyan(" NOW PLAYING  ")
+            + term.bold_white(title[: max(0, w - 15)])
+            + term.clear_eol
+        )
+        row += 1
+
+        detail = curr_track.uploader if curr_track and curr_track.uploader else self._status_msg
+        out.append(term.move_xy(0, row) + term.white(f" {detail}"[: w - 1]) + term.clear_eol)
+        row += 1
+
+        # 2. Timeline
+        elapsed = format_time(self._time_pos)
+        duration = format_time(self._duration)
+        bar_width = max(5, w - len(elapsed) - len(duration) - 5)
+        pct = (self._time_pos / self._duration) if self._duration > 0 else 0.0
+        bar_str = self._progress_meter(bar_width, pct)
+        out.append(
+            term.move_xy(0, row)
+            + term.white(f" {elapsed} ")
+            + term.green(bar_str)
+            + term.white(f" {duration}")
             + term.clear_eol
         )
         row += 2
 
-        # 4. Side-by-Side Kitty Thumbnail Preview & Spectrum Analyzer
+        # 3. Side-by-side artwork and spectrum
         preview_width = 16
         show_preview_box = self._show_preview and w >= 55 and h >= 18
 
         if self._show_visualizer and h >= 18:
-            spec_height = min(12, h - row - 8)
+            panel_label = " ARTWORK" if show_preview_box else ""
+            viz_label_col = preview_width + 4 if show_preview_box else 2
+            out.append(term.move_xy(0, row) + term.cyan(panel_label))
+            out.append(
+                term.move_xy(viz_label_col, row)
+                + term.cyan(f"SPECTRUM  ·  {self._spectrum_style.upper()}")
+                + term.clear_eol
+            )
+            row += 1
+            spec_height = min(10, h - row - 8)
             if spec_height >= 3:
                 if show_preview_box:
                     for r_idx in range(spec_height):
@@ -906,28 +927,29 @@ class BlessedMusicPlayer:
             self._spectrum_history.clear()
             self.previewer.clear()
 
-        # 5. Input Prompt (Fuzzy Search / URL Prompt)
+        # 4. Input prompt
         if self._input_mode != "none":
-            prompt_label = "Fuzzy Search: " if self._input_mode == "search" else "Load URL: "
-            input_text = f" {prompt_label}{self._input_buffer}█"
+            prompt_label = "SEARCH" if self._input_mode == "search" else "OPEN URL"
+            input_text = f" {prompt_label}  {self._input_buffer}█"
             out.append(term.move_xy(0, row) + term.bold_yellow(input_text[: w - 1]) + term.clear_eol)
             row += 1
 
-        # 6. Track List (Ranked by Fuzzy score when query active)
+        # 5. Queue (ranked by fuzzy score when query active)
         filtered = self.queue.filtered_tracks
         # How many footer rows do we need? Compute first, then shrink list_height.
         # Build footer lines that fit within terminal width
         footer_lines: List[str] = []
         current_line = ""
         footer_hints = list(self.FOOTER_HINTS)
-        footer_hints.insert(4, "[j/k] Browse" if self._vim_mode else "[V] Vim mode")
+        footer_hints.insert(4, "j/k browse" if self._vim_mode else "V vim mode")
         if self._vim_mode:
-            footer_hints.insert(9, "[h/l] Seek")
+            footer_hints.insert(9, "h/l seek")
         for hint in footer_hints:
-            candidate = (current_line + " " + hint) if current_line else (" " + hint)
+            decorated = f"[{hint.split(' ', 1)[0]}]" + (f" {hint.split(' ', 1)[1]}" if " " in hint else "")
+            candidate = (current_line + "  " + decorated) if current_line else (" " + decorated)
             if current_line and len(candidate) > w - 1:
                 footer_lines.append(current_line)
-                current_line = " " + hint
+                current_line = " " + decorated
             else:
                 current_line = candidate
         if current_line:
@@ -939,8 +961,16 @@ class BlessedMusicPlayer:
         self._list_height = list_height
         self._move_list_selection(0)
 
-        list_header = f" TRACKS ({len(filtered)}/{len(self.queue.tracks)}) " if self._input_buffer else " TRACKS "
-        out.append(term.move_xy(0, row) + term.magenta(list_header + "─" * max(0, w - len(list_header) - 1)) + term.clear_eol)
+        list_header = (
+            f" QUEUE  {len(filtered)} OF {len(self.queue.tracks)} "
+            if self._input_buffer
+            else f" QUEUE  {len(self.queue.tracks)} TRACKS "
+        )
+        out.append(
+            term.move_xy(0, row)
+            + term.magenta(list_header + "─" * max(0, w - len(list_header) - 1))
+            + term.clear_eol
+        )
         row += 1
 
         # Store for mouse hit-testing
@@ -975,8 +1005,12 @@ class BlessedMusicPlayer:
         for r_clear in range(row + list_height, footer_start_row):
             out.append(term.move_xy(0, r_clear) + term.clear_eol)
 
-        # 7. Footer — resizable: wraps to multiple rows when terminal is narrow
+        # 6. Compact command bar
         for fi, fline in enumerate(footer_lines):
-            out.append(term.move_xy(0, footer_start_row + fi) + term.cyan(fline[: w - 1]) + term.clear_eol)
+            out.append(
+                term.move_xy(0, footer_start_row + fi)
+                + term.cyan(fline[: w - 1])
+                + term.clear_eol
+            )
 
         print("".join(out), end="", flush=True)

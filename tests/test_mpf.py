@@ -567,6 +567,13 @@ class TestSpectrumStyles(unittest.TestCase):
 
 
 class TestPlayerQualityOfLife(unittest.TestCase):
+    def test_dashboard_progress_meter_clamps_and_fills_available_width(self):
+        from mpf_core.player import BlessedMusicPlayer
+
+        self.assertEqual(BlessedMusicPlayer._progress_meter(10, 0.5), "━━━━●─────")
+        self.assertEqual(BlessedMusicPlayer._progress_meter(4, -1.0), "●───")
+        self.assertEqual(BlessedMusicPlayer._progress_meter(4, 2.0), "━━━●")
+
     def test_help_overlay_opens_and_closes_with_question_mark_or_escape(self):
         from mpf_core.player import BlessedMusicPlayer
 
