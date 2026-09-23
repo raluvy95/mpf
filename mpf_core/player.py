@@ -334,7 +334,8 @@ class BlessedMusicPlayer:
         if process is None:
             return
         try:
-            process.stdin.close()
+            if process.stdin is not None:
+                process.stdin.close()
             process.wait(timeout=0.5)
         except subprocess.TimeoutExpired:
             process.terminate()

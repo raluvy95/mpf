@@ -48,7 +48,7 @@ class KittyPreviewer:
         self._lock = threading.Lock()
         self.generation = 0
         os.makedirs(self.thumbs_dir, exist_ok=True)
-        self._executor.submit(self.expire_cache)
+        self.expire_cache()
 
     def _thumbnail_path(self, track: Track) -> str:
         safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", track.id)[:128] or "thumbnail"
