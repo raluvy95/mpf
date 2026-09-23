@@ -23,8 +23,8 @@ class PipeWireSpectrumAnalyzer:
     def __init__(self, num_bands: int = 32, target_node: str = "mpv") -> None:
         self.num_bands = num_bands
         self.target_node = target_node
-        self.bands = [0.0] * num_bands
-        self.peaks = [0.0] * num_bands
+        self.bands = np.zeros(num_bands, dtype=np.float32)
+        self.peaks = np.zeros(num_bands, dtype=np.float32)
         self.enabled = False
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -75,8 +75,8 @@ class PipeWireSpectrumAnalyzer:
             except OSError as err:
                 logger.debug("Unable to stop audio capture process: %s", err)
         with self._lock:
-            self.bands = [0.0] * self.num_bands
-            self.peaks = [0.0] * self.num_bands
+            self.bands.fill(0.0)
+            self.peaks.fill(0.0)
 
     def resume(self) -> None:
         """Resume audio capture."""
@@ -192,34 +192,34 @@ class PipeWireSpectrumAnalyzer:
                 0.22 * raw_bands[:-2] + 0.56 * raw_bands[1:-1] + 0.22 * raw_bands[2:]
             )
 
-        # 2. Temporal smoothing (Asymmetric EMA attack/decay)
-        with self._lock:
-            for i in range(self.num_bands):
-                target = float(spatial_bands[i])
-                if target > self.bands[i]:
-                    # Fast attack to catch beats
-                    self.bands[i] = self.bands[i] + 0.65 * (target - self.bands[i])
-                else:
-                    # Gentle exponential decay
-                    self.bands[i] = max(0.0, self.bands[i] * 0.88)
+        # 2. Temporal smoothing (asymmetric EMA attack/decay)
+        self._smooth_bands(spatial_bands)
 
-                # Smooth peak falloff
-                if self.bands[i] >= self.peaks[i]:
-                    self.peaks[i] = self.bands[i]
-                else:
-                    self.peaks[i] = max(0.0, self.peaks[i] - 0.02)
+    def _smooth_bands(self, spatial_bands: np.ndarray) -> None:
+        """Apply attack, decay, and peak falloff to all bands at once."""
+        with self._lock:
+            attack = spatial_bands > self.bands
+            self.bands = np.where(
+                attack,
+                self.bands + 0.65 * (spatial_bands - self.bands),
+                self.bands * 0.88,
+            ).astype(np.float32, copy=False)
+            self.peaks = np.where(
+                self.bands >= self.peaks,
+                self.bands,
+                np.maximum(0.0, self.peaks - 0.02),
+            ).astype(np.float32, copy=False)
 
     def get_bands(self, num_output_bands: Optional[int] = None) -> Tuple[List[float], List[float]]:
         with self._lock:
             if num_output_bands is None or num_output_bands == self.num_bands:
-                return list(self.bands), list(self.peaks)
+                return self.bands.tolist(), self.peaks.tolist()
 
             n = num_output_bands
-            res_bands = [0.0] * n
-            res_peaks = [0.0] * n
-            for i in range(n):
-                src_idx = int((i / n) * self.num_bands)
-                src_idx = min(self.num_bands - 1, src_idx)
-                res_bands[i] = self.bands[src_idx]
-                res_peaks[i] = self.peaks[src_idx]
-            return res_bands, res_peaks
+            if n <= 0:
+                return [], []
+            indices = np.minimum(
+                self.num_bands - 1,
+                np.arange(n, dtype=np.intp) * self.num_bands // n,
+            )
+            return self.bands[indices].tolist(), self.peaks[indices].tolist()

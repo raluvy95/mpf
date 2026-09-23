@@ -216,6 +216,22 @@ class TestTrackQueue(unittest.TestCase):
         self.queue.clear_filter()
         self.assertEqual(len(self.queue.filtered_tracks), 3)
 
+    def test_filtered_tracks_reuses_results_until_queue_or_query_changes(self):
+        self.queue.set_filter("song")
+        first = self.queue.filtered_tracks
+
+        self.assertIs(self.queue.filtered_tracks, first)
+
+        self.queue.set_filter("beta")
+        second = self.queue.filtered_tracks
+        self.assertIsNot(second, first)
+        self.assertEqual([track.id for _, track in second], ["2"])
+
+        self.queue.set_tracks([Track("4", "Beta replacement")])
+        third = self.queue.filtered_tracks
+        self.assertIsNot(third, second)
+        self.assertEqual([track.id for _, track in third], ["4"])
+
 
 class TestPlaylistCaching(unittest.TestCase):
     def test_save_and_load_cache(self):
@@ -348,6 +364,17 @@ class TestSpectrumAnalyzer(unittest.TestCase):
 
         self.assertGreater(max(quiet_analyzer.get_bands()[0]), 0.0)
         self.assertGreater(max(loud_analyzer.get_bands()[0]), 0.0)
+
+    def test_vectorized_smoothing_preserves_attack_decay_and_peaks(self):
+        analyzer = PipeWireSpectrumAnalyzer(num_bands=3)
+
+        analyzer._smooth_bands(np.array([1.0, 0.5, 0.0], dtype=np.float32))
+        np.testing.assert_allclose(analyzer.get_bands()[0], [0.65, 0.325, 0.0])
+        np.testing.assert_allclose(analyzer.get_bands()[1], [0.65, 0.325, 0.0])
+
+        analyzer._smooth_bands(np.zeros(3, dtype=np.float32))
+        np.testing.assert_allclose(analyzer.get_bands()[0], [0.572, 0.286, 0.0], atol=1e-6)
+        np.testing.assert_allclose(analyzer.get_bands()[1], [0.63, 0.305, 0.0], atol=1e-6)
 
     def test_pause_during_capture_keeps_process_reference_safe(self):
         analyzer = PipeWireSpectrumAnalyzer(num_bands=16, target_node="mpv")

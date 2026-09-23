@@ -168,11 +168,13 @@ class TrackQueue:
         self.current_idx: int = 0
         self.repeat_mode: RepeatMode = RepeatMode.ALL
         self._search_filter: str = ""
+        self._filtered_cache: Optional[List[Tuple[int, Track]]] = None
 
     def set_tracks(self, tracks: List[Track], reset_index: bool = True) -> None:
         current_id = self.current_track.id if self.current_track else None
         old_index = self.current_idx
         self.tracks = list(tracks)
+        self._filtered_cache = None
         if reset_index or not self.tracks:
             self.current_idx = 0
         elif current_id:
@@ -190,16 +192,23 @@ class TrackQueue:
     @property
     def filtered_tracks(self) -> List[Tuple[int, Track]]:
         """Return list of (original_index, track) matching fuzzy search."""
+        if self._filtered_cache is not None:
+            return self._filtered_cache
         query = self._search_filter.strip()
         if not query:
-            return list(enumerate(self.tracks))
-        return fuzzy_filter_tracks(self.tracks, query)
+            self._filtered_cache = list(enumerate(self.tracks))
+        else:
+            self._filtered_cache = fuzzy_filter_tracks(self.tracks, query)
+        return self._filtered_cache
 
     def set_filter(self, query: str) -> None:
+        if query == self._search_filter:
+            return
         self._search_filter = query
+        self._filtered_cache = None
 
     def clear_filter(self) -> None:
-        self._search_filter = ""
+        self.set_filter("")
 
     def get_next_index(self, natural_end: bool = False) -> Optional[int]:
         if not self.tracks:
@@ -224,6 +233,7 @@ class TrackQueue:
             return
         curr = self.current_track
         random.shuffle(self.tracks)
+        self._filtered_cache = None
         if curr and curr in self.tracks:
             self.current_idx = self.tracks.index(curr)
         else:
