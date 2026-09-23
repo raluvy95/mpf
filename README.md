@@ -4,6 +4,8 @@ MPF is a Linux terminal player for public YouTube playlists and videos. It
 combines mpv playback, yt-dlp extraction, fuzzy queue search, Kitty thumbnail
 previews, and a PipeWire or PulseAudio spectrum display in a Blessed TUI.
 
+> **Disclaimer:** Vibecoded with AI assistance. Use at your own risk.
+
 ## Features
 
 - Persistent playlist, playback position, volume, repeat mode, visualizer, and
@@ -45,8 +47,11 @@ Run without a URL to load the saved default or open one with `o`.
 
 ## AppImage
 
-CI builds `dist/mpf-0.1.0-x86_64.AppImage` as an artifact. The AppImage bundles
-MPF and its Python dependencies, but `mpv` remains a system dependency.
+CI builds an AppImage for every push. Non-release builds are available as
+temporary workflow artifacts; pushing a `v*` tag creates a GitHub Release with
+the versioned AppImage attached and release notes generated from commits since
+the previous release. The AppImage bundles MPF and its Python dependencies,
+but `mpv` remains a system dependency.
 
 To build locally on Linux, install `appimagetool`, create the development
 environment above, then run:

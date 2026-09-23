@@ -33,7 +33,9 @@ with a scope. Use `feat:` for features, `fix:` for fixes, and `docs:`, `test:`,
 `refactor:`, `perf:`, `ci:`, or `chore:` where appropriate.
 
 Mark breaking changes with `!` and a `BREAKING CHANGE:` footer. Releases follow
-Semantic Versioning; no automatic release process is currently configured.
+Semantic Versioning. Push a `vMAJOR.MINOR.PATCH` tag to build and publish a
+GitHub Release; its title matches the tag and its notes are generated from
+commits since the previous release.
 
 ## Repository Hygiene
 
