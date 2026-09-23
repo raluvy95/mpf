@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.1](https://github.com/raluvy95/mpf/compare/v1.0.0...v1.0.1) (2026-09-23)
+
+
+### Documentation
+
+* refresh README tone and presentation ([3fcafc2](https://github.com/raluvy95/mpf/commit/3fcafc2186733eed6fce337ead91013894019929))
+
+## Changelog
+
 All notable changes are documented here. This project follows Semantic
 Versioning and uses Conventional Commits.
 
