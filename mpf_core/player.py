@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import subprocess
+import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from blessed import Terminal
 from python_mpv_jsonipc import MPV
@@ -43,6 +46,29 @@ DEFAULT_PLAYLIST_URL = ""
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _mpv_environment() -> Iterator[None]:
+    """Let system mpv use host libraries instead of PyInstaller's copies."""
+    if not getattr(sys, "frozen", False):
+        yield
+        return
+
+    bundled_library_path = os.environ.get("LD_LIBRARY_PATH")
+    host_library_path = os.environ.get("LD_LIBRARY_PATH_ORIG")
+    if host_library_path is None:
+        os.environ.pop("LD_LIBRARY_PATH", None)
+    else:
+        os.environ["LD_LIBRARY_PATH"] = host_library_path
+
+    try:
+        yield
+    finally:
+        if bundled_library_path is None:
+            os.environ.pop("LD_LIBRARY_PATH", None)
+        else:
+            os.environ["LD_LIBRARY_PATH"] = bundled_library_path
 
 
 class BlessedMusicPlayer:
@@ -116,15 +142,16 @@ class BlessedMusicPlayer:
         """Run the main async event loop with Blessed context managers."""
         self._loop = asyncio.get_running_loop()
         try:
-            self.mpv = MPV(
-                video=False,
-                ytdl=True,
-                ytdl_format="bestaudio/best",
-                cache="yes",
-                demuxer_max_bytes="25M",
-                demuxer_readahead_secs="30",
-                stop_screensaver="yes",
-            )
+            with _mpv_environment():
+                self.mpv = MPV(
+                    video=False,
+                    ytdl=True,
+                    ytdl_format="bestaudio/best",
+                    cache="yes",
+                    demuxer_max_bytes="25M",
+                    demuxer_readahead_secs="30",
+                    stop_screensaver="yes",
+                )
             self.mpv.bind_event("end-file", self._on_mpv_end_file)
             self.mpv.bind_event("file-loaded", self._on_mpv_file_loaded)
         except Exception as err:

@@ -507,6 +507,24 @@ class TestConfiguration(unittest.TestCase):
 
 
 class TestPlayerInitialization(unittest.TestCase):
+    def test_appimage_mpv_launch_restores_host_library_path(self):
+        from mpf_core.player import _mpv_environment
+
+        with patch("mpf_core.player.sys.frozen", True, create=True), patch.dict(
+            os.environ,
+            {
+                "LD_LIBRARY_PATH": "/tmp/.mount_mpf/usr/bin/_internal",
+                "LD_LIBRARY_PATH_ORIG": "/usr/lib:/lib",
+            },
+            clear=True,
+        ):
+            with _mpv_environment():
+                self.assertEqual(os.environ["LD_LIBRARY_PATH"], "/usr/lib:/lib")
+
+            self.assertEqual(
+                os.environ["LD_LIBRARY_PATH"], "/tmp/.mount_mpf/usr/bin/_internal"
+            )
+
     @patch("mpf_core.player.MPV")
     def test_mpv_inhibits_screensaver_only_during_playback(self, mock_mpv):
         from mpf_core.player import BlessedMusicPlayer
