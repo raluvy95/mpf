@@ -1,0 +1,25 @@
+# Pinned versions CI installs with: pip install -r requirements-dev.txt -c constraints.txt
+# Regenerate in a clean venv: pip install -r requirements-dev.txt && pip freeze
+altgraph==0.17.5
+blessed==1.52.0
+iniconfig==2.3.1
+jinxed==2.1.0
+librt==0.16.0
+msgpack==1.2.3
+mypy==1.20.2
+mypy_extensions==1.1.0
+numpy==2.5.4
+packaging==26.3
+pathspec==1.1.1
+pluggy==1.7.0
+Pygments==2.21.0
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.9
+pytest==9.1.1
+python-mpv-jsonipc==1.5.0
+ruff==0.17.2
+setuptools==84.2.1
+typing_extensions==4.16.0
+wcwidth==0.9.3
+yt-dlp==2026.10.21
+zstandard==0.25.0

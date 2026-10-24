@@ -9,7 +9,7 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 APPIMAGETOOL="${APPIMAGETOOL:-appimagetool}"
-VERSION="${MPF_VERSION:-0.1.0}"
+VERSION="${MPF_VERSION:-$(sed -n 's/^__version__ = "\([^"]*\)".*/\1/p' "${ROOT_DIR}/mpf.py")}"
 BUILD_DIR="${BUILD_DIR:-${ROOT_DIR}/build/appimage}"
 APP_DIR="${BUILD_DIR}/MPF.AppDir"
 OUTPUT="${OUTPUT:-${ROOT_DIR}/dist/mpf-${VERSION}-x86_64.AppImage}"

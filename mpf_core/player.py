@@ -124,6 +124,7 @@ class BlessedMusicPlayer:
         self._time_pos = 0.0
         self._duration = 0.0
         self._last_state_save = 0.0
+        self._state_save: Optional[asyncio.Future[bool]] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._playlist_task: Optional[asyncio.Task[None]] = None
         self._failed_track_ids: set[str] = set()
@@ -185,6 +186,9 @@ class BlessedMusicPlayer:
                 await asyncio.gather(render_task, input_task, mpv_task, return_exceptions=True)
                 if self._playlist_task:
                     await asyncio.gather(self._playlist_task, return_exceptions=True)
+                if self._state_save:
+                    # Let an in-flight periodic save finish so it cannot overwrite the final one.
+                    await asyncio.gather(self._state_save, return_exceptions=True)
                 self._save_current_state()
                 self.previewer.clear()
                 self.previewer.close()
@@ -198,12 +202,12 @@ class BlessedMusicPlayer:
                     finally:
                         self.mpv = None
 
-    def _save_current_state(self) -> None:
-        """Persist current playback position, track, and settings to .cache_playback.json."""
+    def _snapshot_playback_state(self) -> Optional[PlaybackState]:
+        """Capture the current playback position, track, and settings."""
         curr = self.queue.current_track
         if not curr:
-            return
-        state = PlaybackState(
+            return None
+        return PlaybackState(
             playlist_url=self.playlist_url,
             track_id=curr.id,
             track_index=self.queue.current_idx,
@@ -213,7 +217,12 @@ class BlessedMusicPlayer:
             volume=self._volume,
             updated_at=time.time(),
         )
-        save_playback_state(state)
+
+    def _save_current_state(self) -> None:
+        """Persist current playback state to the playback cache."""
+        state = self._snapshot_playback_state()
+        if state:
+            save_playback_state(state)
 
     async def load_playlist(self, url: str) -> None:
         """Load playlist from cache first, then fetch updates via yt_dlp (once per week)."""
@@ -464,11 +473,17 @@ class BlessedMusicPlayer:
                         elif not source_active and self.spectrum.enabled:
                             self.spectrum.pause()
 
-                    # Periodically save playback state every 3 seconds
+                    # Periodically save playback state every 3 seconds. The write locks and
+                    # fsyncs, so it runs in an executor to keep the UI loop responsive.
                     now = time.time()
                     if now - self._last_state_save >= 3.0:
-                        self._save_current_state()
                         self._last_state_save = now
+                        state = self._snapshot_playback_state()
+                        if state:
+                            self._state_save = asyncio.get_running_loop().run_in_executor(
+                                None, save_playback_state, state
+                            )
+                            await asyncio.shield(self._state_save)
                     self._mpv_poll_error_reported = False
                 except Exception as err:
                     if not self._mpv_poll_error_reported:

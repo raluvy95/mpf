@@ -1,10 +1,12 @@
 """Regression tests for reliability and long-running resource behavior."""
 
+import asyncio
 import io
 import json
 import os
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -359,6 +361,71 @@ class TestRenderOptimization(unittest.TestCase):
         self.assertEqual(player._render_delay(), 1 / 15)
         player._show_visualizer = False
         self.assertEqual(player._render_delay(), 0.1)
+
+
+class TestPlaybackStatePersistence(unittest.IsolatedAsyncioTestCase):
+    def _player(self):
+        with patch("mpf_core.player.MPV"):
+            player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        self.addCleanup(player.previewer.close)
+        player.queue = TrackQueue([Track("a", "Song A"), Track("b", "Song B")])
+        return player
+
+    def test_snapshot_requires_a_current_track(self):
+        player = self._player()
+        player.queue = TrackQueue()
+        self.assertIsNone(player._snapshot_playback_state())
+
+        player.queue = TrackQueue([Track("a", "Song A")])
+        player._time_pos = 12.5
+        state = player._snapshot_playback_state()
+        self.assertEqual((state.track_id, state.time_pos), ("a", 12.5))
+
+    async def test_periodic_state_save_runs_off_the_event_loop_thread(self):
+        player = self._player()
+        player.mpv = MagicMock(time_pos=12.0, duration=100.0, paused_for_cache=False, core_idle=False)
+        loop_thread = threading.get_ident()
+        saved = []
+
+        def fake_save(state):
+            saved.append((state, threading.get_ident()))
+            return True
+
+        with patch("mpf_core.player.save_playback_state", side_effect=fake_save):
+            task = asyncio.create_task(player._mpv_poll_loop())
+            await asyncio.sleep(0.05)
+            player._running = False
+            await task
+
+        self.assertEqual(len(saved), 1)
+        state, thread_id = saved[0]
+        self.assertEqual((state.track_id, state.time_pos), ("a", 12.0))
+        self.assertNotEqual(thread_id, loop_thread)
+
+    async def test_cancelled_poll_loop_does_not_interrupt_in_flight_save(self):
+        player = self._player()
+        player.mpv = MagicMock(time_pos=12.0, duration=100.0, paused_for_cache=False, core_idle=False)
+        started = threading.Event()
+        release = threading.Event()
+        finished = []
+
+        def slow_save(_state):
+            started.set()
+            release.wait(timeout=5)
+            finished.append(True)
+            return True
+
+        with patch("mpf_core.player.save_playback_state", side_effect=slow_save):
+            task = asyncio.create_task(player._mpv_poll_loop())
+            await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+            self.assertFalse(player._state_save.cancelled())
+            release.set()
+            await asyncio.gather(player._state_save, return_exceptions=True)
+
+        self.assertEqual(finished, [True])
 
 
 if __name__ == "__main__":

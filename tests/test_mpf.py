@@ -2,13 +2,15 @@
 
 import json
 import os
+import re
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from mpf import DEFAULT_PLAYLIST_URL, parse_cli_args
+from mpf import DEFAULT_PLAYLIST_URL, __version__, parse_cli_args
 from mpf_core import (
     KittyPreviewer,
     PipeWireSpectrumAnalyzer,
@@ -319,6 +321,21 @@ class TestKittyPreviewer(unittest.TestCase):
                 previewer.render(Track("track", "Track"), 2, 1, 10, 5)
             clear.assert_called_once()
 
+    def test_render_bounds_kitty_with_timeout_and_survives_hang(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image = os.path.join(tmpdir, "fallback.svg")
+            with open(image, "w", encoding="utf-8") as file:
+                file.write("<svg/>")
+            previewer = KittyPreviewer(thumbs_dir=tmpdir, fallback_icon=image)
+            self.addCleanup(previewer.close)
+            previewer.has_kitty = True
+            with patch(
+                "mpf_core.previewer.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="kitty", timeout=5),
+            ) as run:
+                previewer.render(Track("track", "Track"), 2, 1, 10, 5)
+            self.assertIsNotNone(run.call_args.kwargs["timeout"])
+
 
 class TestSpectrumAnalyzer(unittest.TestCase):
     def test_startup_disabled_state(self):
@@ -504,6 +521,75 @@ class TestConfiguration(unittest.TestCase):
             json.dump({"vim_mode": "false"}, config)
             config.flush()
             self.assertTrue(load_vim_mode(config.name))
+
+    def test_saving_a_setting_preserves_an_unparseable_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = os.path.join(tmpdir, "config.json")
+            original = '{"default_playlist": "x", // my notes\n}'
+            with open(config, "w", encoding="utf-8") as file:
+                file.write(original)
+
+            self.assertTrue(save_vim_mode(False, config))
+
+            with open(f"{config}.bad", encoding="utf-8") as backup:
+                self.assertEqual(backup.read(), original)
+            self.assertFalse(load_vim_mode(config))
+
+    def test_non_object_config_is_preserved_before_saving(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = os.path.join(tmpdir, "config.json")
+            with open(config, "w", encoding="utf-8") as file:
+                file.write("[1, 2, 3]")
+
+            self.assertTrue(save_visualizer_preferences("bars", True, config))
+
+            with open(f"{config}.bad", encoding="utf-8") as backup:
+                self.assertEqual(backup.read(), "[1, 2, 3]")
+            self.assertEqual(load_visualizer_preferences(config), ("bars", True))
+
+    def test_config_is_untouched_when_backup_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = os.path.join(tmpdir, "config.json")
+            with open(config, "w", encoding="utf-8") as file:
+                file.write("{broken")
+
+            with patch("mpf_core.config.os.replace", side_effect=OSError("read-only")):
+                self.assertFalse(save_vim_mode(False, config))
+
+            with open(config, encoding="utf-8") as file:
+                self.assertEqual(file.read(), "{broken")
+
+    def test_non_utf8_config_is_ignored_on_load_and_preserved_on_save(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = os.path.join(tmpdir, "config.json")
+            with open(config, "wb") as file:
+                file.write(b'{"vim_mode": "\xff\xfe"}')
+
+            self.assertTrue(load_vim_mode(config))
+            self.assertTrue(save_vim_mode(False, config))
+            self.assertTrue(os.path.exists(f"{config}.bad"))
+            self.assertFalse(load_vim_mode(config))
+
+
+class TestReleaseMetadata(unittest.TestCase):
+    def test_version_is_semver_and_matches_release_manifest(self):
+        self.assertRegex(__version__, r"^\d+\.\d+\.\d+$")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, ".release-please-manifest.json"), encoding="utf-8") as file:
+            self.assertEqual(json.load(file)["."], __version__)
+
+    def test_release_please_updates_the_version_in_mpf_py(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "release-please-config.json"), encoding="utf-8") as file:
+            package = json.load(file)["packages"]["."]
+        self.assertIn("mpf.py", package["extra-files"])
+        with open(os.path.join(root, "mpf.py"), encoding="utf-8") as file:
+            self.assertTrue(
+                any(
+                    re.match(r"^__version__ = ", line) and "x-release-please-version" in line
+                    for line in file
+                )
+            )
 
 
 class TestPlayerInitialization(unittest.TestCase):

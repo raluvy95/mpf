@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import tempfile
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from mpf_core.fetcher import InvalidMediaURL, validate_media_url
 from mpf_core.paths import CONFIG_FILE
@@ -16,16 +16,48 @@ VISUALIZER_STYLES = ("waterfall", "bars", "braille", "waveform")
 DEFAULT_VIM_MODE = True
 
 
+def _parse_config(config_file: str) -> Any:
+    with open(config_file, encoding="utf-8") as file:
+        return json.load(file)
+
+
 def _load_config(config_file: str) -> Dict[str, Any]:
     try:
-        with open(config_file, encoding="utf-8") as file:
-            config = json.load(file)
+        config = _parse_config(config_file)
     except FileNotFoundError:
         return {}
-    except (OSError, json.JSONDecodeError) as err:
+    except (OSError, ValueError) as err:
         logger.warning("Ignoring invalid configuration %s: %s", config_file, err)
         return {}
     return config if isinstance(config, dict) else {}
+
+
+def _load_config_for_update(config_file: str) -> Optional[Dict[str, Any]]:
+    """Load the config for a read-modify-write, never discarding a file we cannot parse.
+
+    An unparseable file is moved aside to ``<config>.bad`` so saving a setting does not
+    destroy the user's hand-edited content. Returns None when it cannot be updated safely.
+    """
+    try:
+        config = _parse_config(config_file)
+    except FileNotFoundError:
+        return {}
+    except OSError as err:
+        logger.warning("Not updating unreadable configuration %s: %s", config_file, err)
+        return None
+    except ValueError:
+        config = None
+    if isinstance(config, dict):
+        return config
+
+    backup = f"{config_file}.bad"
+    try:
+        os.replace(config_file, backup)
+    except OSError as err:
+        logger.warning("Not updating invalid configuration %s; backup failed: %s", config_file, err)
+        return None
+    logger.warning("Invalid configuration %s was moved to %s", config_file, backup)
+    return {}
 
 
 def load_default_playlist(config_file: str = CONFIG_FILE) -> str:
@@ -83,7 +115,9 @@ def save_default_playlist(playlist: str, config_file: str = CONFIG_FILE) -> bool
     except InvalidMediaURL as err:
         logger.warning("Unable to save default playlist to %s: %s", config_file, err)
         return False
-    config = _load_config(config_file)
+    config = _load_config_for_update(config_file)
+    if config is None:
+        return False
     config["default_playlist"] = playlist
     return _save_config(config, config_file)
 
@@ -92,7 +126,9 @@ def save_visualizer_preferences(style: str, visible: bool, config_file: str = CO
     """Persist the visualizer choice without replacing other configuration."""
     if style not in VISUALIZER_STYLES or not isinstance(visible, bool):
         return False
-    config = _load_config(config_file)
+    config = _load_config_for_update(config_file)
+    if config is None:
+        return False
     config["visualizer_style"] = style
     config["show_visualizer"] = visible
     return _save_config(config, config_file)
@@ -108,6 +144,8 @@ def save_vim_mode(enabled: bool, config_file: str = CONFIG_FILE) -> bool:
     """Persist the Vim navigation preference without replacing other settings."""
     if not isinstance(enabled, bool):
         return False
-    config = _load_config(config_file)
+    config = _load_config_for_update(config_file)
+    if config is None:
+        return False
     config["vim_mode"] = enabled
     return _save_config(config, config_file)

@@ -23,6 +23,7 @@ DEFAULT_AUDIO_ICON_PATH = "/usr/share/icons/Adwaita/scalable/mimetypes/audio-x-g
 THUMBNAIL_MAX_AGE_SECONDS = 30 * 24 * 3600
 THUMBNAIL_CACHE_MAX_BYTES = 256 * 1024 * 1024
 THUMBNAIL_DOWNLOAD_MAX_BYTES = 10 * 1024 * 1024
+KITTY_RENDER_TIMEOUT_SECONDS = 5.0
 
 logger = logging.getLogger(__name__)
 
@@ -187,9 +188,19 @@ class KittyPreviewer:
                 f"--place={width}x{height}@{x}x{y}",
                 img_path,
             ]
-            result = subprocess.run(cmd, stdout=sys.stdout, stderr=subprocess.DEVNULL, check=False)
+            result = subprocess.run(
+                cmd,
+                stdout=sys.stdout,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=KITTY_RENDER_TIMEOUT_SECONDS,
+            )
             if result.returncode:
                 logger.warning("Kitty thumbnail renderer exited with status %d", result.returncode)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Kitty thumbnail renderer timed out after %.0fs", KITTY_RENDER_TIMEOUT_SECONDS
+            )
         except OSError as err:
             logger.warning("Unable to render Kitty thumbnail: %s", err)
 
