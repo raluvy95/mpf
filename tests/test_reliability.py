@@ -4,7 +4,9 @@ import asyncio
 import io
 import json
 import os
+import random
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -818,6 +820,167 @@ class TestSearchIsolation(unittest.TestCase):
 
         self.assertEqual(self.player._selected_list_idx, 9)
         self.assertLessEqual(self.player._scroll_offset, 9)
+
+
+def _reference_spectrum_lines(player, style, bands, height, width, history):
+    """The original per-cell implementation, kept to prove the vectorized one is identical."""
+    chars = player.SPECTRUM_CHARS
+    if style == "waterfall":
+        padding = [[0.0] * width] * max(0, height - len(history))
+        return [
+            "".join(chars[min(len(chars) - 1, int(value * (len(chars) - 1)))] for value in row)
+            for row in padding + history
+        ]
+    lines = [[" "] * width for _ in range(height)]
+    if style == "waveform":
+        for col, value in enumerate(bands[:width]):
+            row = height - 1 - min(height - 1, int(value * height))
+            lines[row][col] = "•"
+    elif style == "braille":
+        levels = height * 4
+        for col in range(width):
+            left = bands[min(len(bands) - 1, col * 2)]
+            right = bands[min(len(bands) - 1, col * 2 + 1)]
+            for row in range(height):
+                mask = 0
+                for dot in range(4):
+                    level = levels - (row * 4 + dot)
+                    if left * levels >= level:
+                        mask |= player.BRAILLE_LEFT[dot]
+                    if right * levels >= level:
+                        mask |= player.BRAILLE_RIGHT[dot]
+                lines[row][col] = chr(0x2800 + mask)
+    else:
+        for col, value in enumerate(bands[:width]):
+            active_levels = int(value * height * 8)
+            for row in range(height):
+                row_level = active_levels - ((height - 1 - row) * 8)
+                if row_level >= 8:
+                    lines[row][col] = "█"
+                elif row_level > 0:
+                    lines[row][col] = "▁▂▃▄▅▆▇"[row_level - 1]
+    return ["".join(line) for line in lines]
+
+
+class TestSpectrumRenderEquivalence(unittest.TestCase):
+    def setUp(self):
+        with patch("mpf_core.player.MPV"):
+            self.player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        self.addCleanup(self.player.previewer.close)
+        self.player.spectrum = MagicMock(enabled=True)
+        self.rng = random.Random(1234)
+
+    def _bands(self, count, high=1.0):
+        edges = [0.0, 1.0, 0.5, 0.25, 1.0 / 3.0, 7 / 8, 1e-9, high]
+        return [self.rng.choice(edges) if self.rng.random() < 0.3 else self.rng.uniform(0, high) for _ in range(count)]
+
+    def test_matches_the_original_implementation_for_every_style(self):
+        cases = 0
+        for style in ("bars", "waveform", "braille"):
+            for height in (3, 5, 8, 10):
+                for width in (1, 2, 7, 40, 96):
+                    for count in (1, width, width * 2, width + 5):
+                        for high in (1.0, 1.6):
+                            bands = self._bands(count, high)
+                            self.player._spectrum_style = style
+                            actual = self.player._render_spectrum_lines(bands, height, width)
+                            expected = _reference_spectrum_lines(self.player, style, bands, height, width, [])
+                            self.assertEqual(actual, expected, (style, height, width, count, high))
+                            cases += 1
+        self.assertGreater(cases, 400)
+
+    def test_waterfall_matches_including_padding_and_ragged_history(self):
+        self.player._spectrum_style = "waterfall"
+        for height in (3, 8):
+            for width in (4, 96):
+                for rows in (0, 1, height, height + 3):
+                    # rows of a different width model history left over from a terminal resize
+                    history = [self._bands(width if i % 3 else width + 7) for i in range(rows)]
+                    self.player._spectrum_history = [list(row) for row in history]
+                    actual = self.player._render_spectrum_lines(self._bands(width), height, width)
+                    kept = self.player._spectrum_history
+                    expected = _reference_spectrum_lines(self.player, "waterfall", [], height, width, kept)
+                    self.assertEqual(actual, expected, (height, width, rows))
+                    self.assertEqual(len(actual), height)
+
+    def test_every_line_is_exactly_width_cells(self):
+        for style in ("bars", "waveform", "braille"):
+            self.player._spectrum_style = style
+            lines = self.player._render_spectrum_lines(self._bands(30), 6, 30)
+            self.assertEqual({len(line) for line in lines}, {30}, style)
+
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+class TestPerformanceGuards(unittest.TestCase):
+    """Guards for measured wins; the budgets leave wide headroom so they are not flaky."""
+
+    def test_yt_dlp_is_only_imported_when_a_fetch_happens(self):
+        # Importing yt_dlp costs ~300 ms; launches that load the playlist cache never need it.
+        code = (
+            "import sys; import mpf; import mpf_core.config, mpf_core.player;"
+            " sys.exit(1 if 'yt_dlp' in sys.modules else 0)"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=ROOT,
+            env={**os.environ, "PYTHONPATH": ROOT},
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or "yt_dlp was imported at startup")
+
+    def _player_and_term(self, track_count=2000):
+        with patch("mpf_core.player.MPV"):
+            player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        self.addCleanup(player.previewer.close)
+        player.previewer = MagicMock()
+        player.queue = TrackQueue([Track(str(i), f"Song {i}", 200.0, "Artist") for i in range(track_count)])
+        player._show_visualizer = False
+        player._selected_list_idx = track_count // 2
+        return player
+
+    def _render_with(self, player, height=40, width=120):
+        with patch.object(Terminal, "height", new_callable=PropertyMock, return_value=height), patch.object(
+            Terminal, "width", new_callable=PropertyMock, return_value=width
+        ), redirect_stdout(io.StringIO()):
+            if not isinstance(player.term, Terminal) or player.term.does_styling is False:
+                player.term = Terminal(force_styling=True, kind="xterm-256color")
+            player._render()
+
+    def test_frames_reuse_cursor_move_sequences(self):
+        # blessed re-parses the terminfo template on every move_xy call (~250 us each).
+        player = self._player_and_term()
+        self._render_with(player)  # first frame fills the cache
+        with patch.object(player.term, "move_xy", wraps=player.term.move_xy) as move_xy:
+            self._render_with(player)
+        move_xy.assert_not_called()
+
+    def test_move_cache_is_per_terminal_and_matches_blessed(self):
+        player = self._player_and_term()
+        self._render_with(player)
+        first = player.term
+        self.assertEqual(player._move(5, 3), first.move_xy(5, 3))
+
+        player.term = Terminal(force_styling=True, kind="xterm-256color")
+        self.assertEqual(player._move(7, 2), player.term.move_xy(7, 2))
+        self.assertIs(player._move_cache_term, player.term)
+
+    def test_frame_render_stays_within_budget_for_a_large_playlist(self):
+        player = self._player_and_term(track_count=10_000)
+        self._render_with(player)  # warm the cache
+        start = time.perf_counter()
+        for _ in range(20):
+            self._render_with(player)
+        per_frame_ms = (time.perf_counter() - start) / 20 * 1000
+        # ~0.5 ms measured; the renderer before the cursor-move cache needed ~11 ms.
+        self.assertLess(per_frame_ms, 5, f"{per_frame_ms:.1f} ms per frame")
+
+    def test_input_poll_interval_does_not_delay_keypresses(self):
+        # inkey() returns as soon as a key arrives; the interval only bounds idle wakeups.
+        self.assertGreaterEqual(BlessedMusicPlayer.INPUT_POLL_INTERVAL, 0.1)
+        self.assertLessEqual(BlessedMusicPlayer.INPUT_POLL_INTERVAL, 0.5)
 
 
 if __name__ == "__main__":

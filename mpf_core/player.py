@@ -11,6 +11,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+import numpy as np
 from blessed import Terminal
 from python_mpv_jsonipc import MPV
 
@@ -78,9 +79,11 @@ class BlessedMusicPlayer:
     SPECTRUM_STYLES = VISUALIZER_STYLES
     BRAILLE_LEFT = (0x1, 0x2, 0x4, 0x40)
     BRAILLE_RIGHT = (0x8, 0x10, 0x20, 0x80)
+    BRAILLE_TABLE = np.array([chr(0x2800 + mask) for mask in range(256)], dtype="<U1")
     VISUALIZER_RENDER_INTERVAL = 1 / 15
     IDLE_RENDER_INTERVAL = 0.1
     MIN_RENDER_INTERVAL = 1 / 30  # coalesces bursts of input into one redraw
+    INPUT_POLL_INTERVAL = 0.25  # inkey returns at once on a keypress; this only bounds shutdown latency
     SHUFFLE_ICON = "\U000f049f"
     SUMMARY_SEPARATOR = "  ·  "
     FOOTER_HINTS = ["? help", "space pause", "/ search", "o open", "q quit"]
@@ -144,6 +147,8 @@ class BlessedMusicPlayer:
         self._timeline_hit: Optional[Tuple[int, int, int]] = None  # row, first column, width
         self._summary_hits: List[Tuple[int, int, str]] = []  # first column, end column, action
         self._scrubbing = False
+        self._move_cache: Dict[Tuple[int, int], str] = {}
+        self._move_cache_term: Optional[Terminal] = None
         self._search_origin: Tuple[int, int] = (0, 0)  # selection and scroll before searching
 
     async def run(self) -> None:
@@ -208,6 +213,21 @@ class BlessedMusicPlayer:
                         logger.exception("MPV shutdown failed")
                     finally:
                         self.mpv = None
+
+    def _move(self, x: int, y: int) -> str:
+        """Return the cursor-positioning sequence for (x, y).
+
+        Cached because blessed re-parses the terminfo template on every call (~250 us),
+        which dominated the cost of a frame; the sequence for a position never changes.
+        """
+        term = self.term
+        if term is not self._move_cache_term or len(self._move_cache) > 8192:
+            self._move_cache = {}
+            self._move_cache_term = term
+        sequence = self._move_cache.get((x, y))
+        if sequence is None:
+            sequence = self._move_cache[(x, y)] = term.move_xy(x, y)
+        return sequence
 
     def _snapshot_playback_state(self) -> Optional[PlaybackState]:
         """Capture the current playback position, track, and settings."""
@@ -547,11 +567,9 @@ class BlessedMusicPlayer:
     async def _input_loop(self) -> None:
         loop = asyncio.get_running_loop()
         while self._running:
-            key = await loop.run_in_executor(None, self.term.inkey, 0.05)
-            if not key:
-                await asyncio.sleep(0.01)
-                continue
-            self._handle_key(key)
+            key = await loop.run_in_executor(None, self.term.inkey, self.INPUT_POLL_INTERVAL)
+            if key:
+                self._handle_key(key)
 
     def _handle_key(self, key: Any) -> None:
         """Dispatch a key and request a redraw only if it changed what is on screen."""
@@ -830,6 +848,23 @@ class BlessedMusicPlayer:
             self._scroll_offset = self._selected_list_idx - list_height + 1
         self._scroll_offset = min(self._scroll_offset, max(0, filtered_len - list_height))
 
+    def _render_braille_lines(self, bands: List[float], height: int, width: int) -> List[str]:
+        """Braille spectrum, vectorized: the per-dot Python loop was the slowest style by far."""
+        all_bands = np.asarray(bands, dtype=np.float64)
+        columns = np.arange(width) * 2
+        left = all_bands[np.minimum(len(all_bands) - 1, columns)]
+        right = all_bands[np.minimum(len(all_bands) - 1, columns + 1)]
+        dot_levels = height * 4
+        # thresholds[row, dot]: a dot is lit when the band reaches its level.
+        thresholds = dot_levels - np.arange(dot_levels).reshape(height, 4)
+        weights_left = np.asarray(self.BRAILLE_LEFT).reshape(1, 4, 1)
+        weights_right = np.asarray(self.BRAILLE_RIGHT).reshape(1, 4, 1)
+        lit_left = left[None, None, :] * dot_levels >= thresholds[:, :, None]
+        lit_right = right[None, None, :] * dot_levels >= thresholds[:, :, None]
+        masks = (lit_left * weights_left).sum(axis=1) + (lit_right * weights_right).sum(axis=1)
+        grid = np.ascontiguousarray(self.BRAILLE_TABLE[masks])
+        return [row.tobytes().decode("utf-32-le") for row in grid]
+
     def _render_spectrum_lines(self, bands: List[float], height: int, width: int) -> List[str]:
         if self._spectrum_style == "waterfall":
             if self.spectrum.enabled:
@@ -845,27 +880,14 @@ class BlessedMusicPlayer:
             ]
 
         self._spectrum_history.clear()
+        if self._spectrum_style == "braille":
+            return self._render_braille_lines(bands, height, width)
+
         lines = [[" "] * width for _ in range(height)]
         if self._spectrum_style == "waveform":
             for col, value in enumerate(bands[:width]):
                 row = height - 1 - min(height - 1, int(value * height))
                 lines[row][col] = "•"
-            return ["".join(line) for line in lines]
-
-        if self._spectrum_style == "braille":
-            levels = height * 4
-            for col in range(width):
-                left = bands[min(len(bands) - 1, col * 2)]
-                right = bands[min(len(bands) - 1, col * 2 + 1)]
-                for row in range(height):
-                    mask = 0
-                    for dot in range(4):
-                        level = levels - (row * 4 + dot)
-                        if left * levels >= level:
-                            mask |= self.BRAILLE_LEFT[dot]
-                        if right * levels >= level:
-                            mask |= self.BRAILLE_RIGHT[dot]
-                    lines[row][col] = chr(0x2800 + mask)
             return ["".join(line) for line in lines]
 
         for col, value in enumerate(bands[:width]):
@@ -970,7 +992,7 @@ class BlessedMusicPlayer:
         output = [term.clear + term.home]
         for row, line in enumerate(lines[: term.height]):
             style = term.bold_cyan if row == 0 else term.white
-            output.append(term.move_xy(2, row) + style(line[: max(0, width - 3)]) + term.clear_eol)
+            output.append(self._move(2, row) + style(line[: max(0, width - 3)]) + term.clear_eol)
         print("".join(output), end="", flush=True)
 
     @staticmethod
@@ -1041,7 +1063,7 @@ class BlessedMusicPlayer:
         summary_col = w - len(summary) - 1
         self._summary_hits = []
         if summary_col >= 24:
-            header = term.bold_white(left[: summary_col - 2]) + term.move_xy(summary_col, row) + term.cyan(summary)
+            header = term.bold_white(left[: summary_col - 2]) + self._move(summary_col, row) + term.cyan(summary)
             column = summary_col
             for text, action in self._summary_segments():
                 if action:
@@ -1049,11 +1071,11 @@ class BlessedMusicPlayer:
                 column += len(text) + len(self.SUMMARY_SEPARATOR)
         else:
             header = term.bold_white(left[: w - 1])
-        out.append(term.move_xy(0, row) + header + term.clear_eol)
+        out.append(self._move(0, row) + header + term.clear_eol)
         row += 1
 
         detail = curr_track.uploader if curr_track and curr_track.uploader else self._status_msg
-        out.append(term.move_xy(0, row) + term.dim(f"    {detail}"[: w - 1]) + term.clear_eol)
+        out.append(self._move(0, row) + term.dim(f"    {detail}"[: w - 1]) + term.clear_eol)
         row += 1
 
         # 2. Timeline
@@ -1064,7 +1086,7 @@ class BlessedMusicPlayer:
         bar_str = self._progress_meter(bar_width, pct)
         self._timeline_hit = (row, len(elapsed) + 2, bar_width)
         out.append(
-            term.move_xy(0, row)
+            self._move(0, row)
             + term.white(f" {elapsed} ")
             + term.green(bar_str)
             + term.white(f" {duration}")
@@ -1081,7 +1103,7 @@ class BlessedMusicPlayer:
             if spec_height >= 3:
                 if show_preview_box:
                     for r_idx in range(spec_height):
-                        out.append(term.move_xy(2, row + r_idx) + " " * preview_width)
+                        out.append(self._move(2, row + r_idx) + " " * preview_width)
                     viz_start_col = preview_width + 4
                 else:
                     viz_start_col = 2
@@ -1094,7 +1116,7 @@ class BlessedMusicPlayer:
 
                 for r in range(spec_height):
                     current_screen_row = row + r
-                    out.append(term.move_xy(viz_start_col, current_screen_row) + term.bold_cyan(spectrum_lines[r]) + term.clear_eol)
+                    out.append(self._move(viz_start_col, current_screen_row) + term.bold_cyan(spectrum_lines[r]) + term.clear_eol)
 
                 # Render Kitty image overlay
                 if show_preview_box:
@@ -1111,7 +1133,7 @@ class BlessedMusicPlayer:
             input_text = f" {prompt_label}{self._input_buffer}█"
             if self._input_mode == "search" and self._input_buffer:
                 input_text += f"   {len(self.queue.filtered_tracks)}/{len(self.queue.tracks)}"
-            out.append(term.move_xy(0, row) + term.bold_yellow(input_text[: w - 1]) + term.clear_eol)
+            out.append(self._move(0, row) + term.bold_yellow(input_text[: w - 1]) + term.clear_eol)
             row += 1
 
         # 5. Queue (ranked by fuzzy score when query active), with a one-line footer
@@ -1128,7 +1150,7 @@ class BlessedMusicPlayer:
             item_idx = self._scroll_offset + i
             current_screen_row = row + i
             if item_idx >= len(filtered):
-                out.append(term.move_xy(0, current_screen_row) + term.clear_eol)
+                out.append(self._move(0, current_screen_row) + term.clear_eol)
                 continue
 
             orig_idx, track = filtered[item_idx]
@@ -1145,12 +1167,12 @@ class BlessedMusicPlayer:
             else:
                 formatted = term.white(f" {label}"[: w - 1])
 
-            out.append(term.move_xy(0, current_screen_row) + formatted + term.clear_eol)
+            out.append(self._move(0, current_screen_row) + formatted + term.clear_eol)
 
         # Clear remaining unused rows below track list (above footer)
         footer_row = h - 1
         for r_clear in range(row + list_height, footer_row):
-            out.append(term.move_xy(0, r_clear) + term.clear_eol)
+            out.append(self._move(0, r_clear) + term.clear_eol)
 
         footer = ""
         for hint in self.FOOTER_HINTS:
@@ -1158,7 +1180,7 @@ class BlessedMusicPlayer:
             if len(candidate) > w - 1:
                 break
             footer = candidate
-        out.append(term.move_xy(0, footer_row) + term.dim(footer) + term.clear_eol)
+        out.append(self._move(0, footer_row) + term.dim(footer) + term.clear_eol)
 
         out.append(term.hide_cursor)
         print("".join(out), end="", flush=True)

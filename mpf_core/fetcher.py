@@ -6,8 +6,6 @@ import logging
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
-import yt_dlp
-
 from mpf_core.models import Track
 
 logger = logging.getLogger(__name__)
@@ -49,6 +47,10 @@ def validate_media_url(url: str) -> str:
 
 def fetch_playlist_tracks(url: str, ydl_opts: Optional[Dict[str, Any]] = None) -> List[Track]:
     """Extract tracks from YouTube playlist or single video URL using yt_dlp."""
+    # Imported here, not at module level: yt_dlp takes ~300 ms to import, which launches that
+    # load a fresh playlist cache (and --help/--version) never need.
+    import yt_dlp
+
     url = validate_media_url(url)
     opts: Dict[str, Any] = {
         "extract_flat": True,
