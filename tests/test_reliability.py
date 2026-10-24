@@ -734,5 +734,91 @@ class TestRenderOutput(unittest.TestCase):
         self.assertTrue(output.endswith(term.hide_cursor))
 
 
+class TestSearchIsolation(unittest.TestCase):
+    ESC = type("Key", (), {"name": "KEY_ESCAPE", "is_sequence": True})()
+    DOWN = type("Key", (), {"name": "KEY_DOWN", "is_sequence": True})()
+
+    def setUp(self):
+        with patch("mpf_core.player.MPV"):
+            self.player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        self.addCleanup(self.player.previewer.close)
+        tracks = [Track(str(i), f"Song {i:02d}") for i in range(30)]
+        tracks[20] = Track("20", "Needle Track")
+        self.player.queue = TrackQueue(tracks)
+        self.player.mpv = MagicMock()
+        self.player.previewer.request = MagicMock()
+        self.player._list_height = 5
+        self.player._selected_list_idx = 12
+        self.player._scroll_offset = 10
+
+    def _search(self, text):
+        self.player._handle_key("/")
+        for char in text:
+            self.player._handle_key(char)
+
+    def _assert_back_on_full_list_where_left_off(self):
+        player = self.player
+        self.assertEqual(player._input_mode, "none")
+        self.assertEqual(len(player.queue.filtered_tracks), 30)
+        self.assertEqual((player._selected_list_idx, player._scroll_offset), (12, 10))
+
+    def test_escape_returns_to_where_you_left_off(self):
+        self._search("needle")
+        self.assertEqual(len(self.player.queue.filtered_tracks), 1)
+        self.assertEqual(self.player._selected_list_idx, 0)
+
+        self.player._handle_key(self.ESC)
+
+        self._assert_back_on_full_list_where_left_off()
+        self.assertNotEqual(self.player.queue.current_track.title, "Needle Track")
+
+    def test_escape_after_browsing_matches_or_erasing_the_query_still_restores(self):
+        self._search("song")
+        for _ in range(3):
+            self.player._handle_key(self.DOWN)
+        self.player._handle_key(self.ESC)
+        self._assert_back_on_full_list_where_left_off()
+
+        self._search("ab")
+        self.player._handle_key("\x7f")
+        self.player._handle_key("\x7f")
+        self.player._handle_key(self.ESC)
+        self._assert_back_on_full_list_where_left_off()
+
+    def test_enter_plays_the_match_and_selects_it_in_the_full_list(self):
+        self._search("needle")
+
+        self.player._handle_key("\n")
+
+        player = self.player
+        self.assertEqual(player.queue.current_track.title, "Needle Track")
+        self.assertEqual(player._input_mode, "none")
+        self.assertEqual(len(player.queue.filtered_tracks), 30)
+        self.assertEqual(player._selected_list_idx, 20)
+        self.assertLessEqual(player._scroll_offset, 20)
+        self.assertLess(20, player._scroll_offset + player._list_height)
+
+    def test_enter_without_matches_plays_nothing_and_restores_the_selection(self):
+        playing_before = self.player.queue.current_idx
+        self._search("zzzz")
+
+        self.player._handle_key("\n")
+
+        self._assert_back_on_full_list_where_left_off()
+        self.assertEqual(self.player.queue.current_idx, playing_before)
+        self.player.mpv.play.assert_not_called()
+
+    def test_restored_selection_is_clamped_if_the_playlist_shrank_meanwhile(self):
+        self.player._selected_list_idx = 25
+        self.player._scroll_offset = 22
+        self._search("song")
+        self.player.queue.set_tracks(self.player.queue.tracks[:10])
+
+        self.player._handle_key(self.ESC)
+
+        self.assertEqual(self.player._selected_list_idx, 9)
+        self.assertLessEqual(self.player._scroll_offset, 9)
+
+
 if __name__ == "__main__":
     unittest.main()

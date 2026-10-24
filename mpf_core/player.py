@@ -144,6 +144,7 @@ class BlessedMusicPlayer:
         self._timeline_hit: Optional[Tuple[int, int, int]] = None  # row, first column, width
         self._summary_hits: List[Tuple[int, int, str]] = []  # first column, end column, action
         self._scrubbing = False
+        self._search_origin: Tuple[int, int] = (0, 0)  # selection and scroll before searching
 
     async def run(self) -> None:
         """Run the main async event loop with Blessed context managers."""
@@ -565,11 +566,14 @@ class BlessedMusicPlayer:
         if self._input_mode != "none":
             if key_name == "KEY_ENTER" or key == "\n" or key == "\r":
                 if self._input_mode == "search":
-                    # Play the highlighted fuzzy match or dismiss input.
+                    # Play the highlighted fuzzy match, or dismiss the search if nothing matches.
                     filtered = self.queue.filtered_tracks
                     if 0 <= self._selected_list_idx < len(filtered):
                         orig_idx = filtered[self._selected_list_idx][0]
                         self._play_index(orig_idx)
+                        self._exit_search(played_idx=orig_idx)
+                    else:
+                        self._exit_search()
                 elif self._input_mode == "url" and self._input_buffer.strip():
                     candidate = self._input_buffer.strip()
                     try:
@@ -584,7 +588,7 @@ class BlessedMusicPlayer:
                 self._input_buffer = ""
             elif key_name == "KEY_ESCAPE":
                 if self._input_mode == "search":
-                    self.queue.clear_filter()
+                    self._exit_search()
                 self._input_mode = "none"
                 self._input_buffer = ""
             elif self._input_mode == "search" and key_name == "KEY_UP":
@@ -720,6 +724,7 @@ class BlessedMusicPlayer:
         elif key in ("/", "f", "F"):
             self._input_mode = "search"
             self._input_buffer = ""
+            self._search_origin = (self._selected_list_idx, self._scroll_offset)
         elif key in ("o", "O"):
             self._input_mode = "url"
             self._input_buffer = ""
@@ -794,6 +799,21 @@ class BlessedMusicPlayer:
             orig_idx = filtered[clicked_item_idx][0]
             self._selected_list_idx = clicked_item_idx
             self._play_index(orig_idx)
+
+    def _exit_search(self, played_idx: Optional[int] = None) -> None:
+        """Leave search and return to the full playlist.
+
+        Search never changes the main list: cancelling restores the selection and scroll
+        position from before searching, and playing a match selects that track in the full list.
+        """
+        self.queue.clear_filter()
+        if played_idx is None:
+            self._selected_list_idx, self._scroll_offset = self._search_origin
+        else:
+            self._selected_list_idx = played_idx
+            self._scroll_offset = max(0, played_idx - max(1, self._list_height) // 2)
+        self._selected_list_idx = max(0, min(self._selected_list_idx, len(self.queue.tracks) - 1))
+        self._move_list_selection(0)
 
     def _move_list_selection(self, delta: int) -> None:
         """Move list cursor and keep its visible viewport valid after resizes."""
