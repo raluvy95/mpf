@@ -80,6 +80,9 @@ class BlessedMusicPlayer:
     BRAILLE_RIGHT = (0x8, 0x10, 0x20, 0x80)
     VISUALIZER_RENDER_INTERVAL = 1 / 15
     IDLE_RENDER_INTERVAL = 0.1
+    MIN_RENDER_INTERVAL = 1 / 30  # coalesces bursts of input into one redraw
+    SHUFFLE_ICON = "\U000f049f"
+    SUMMARY_SEPARATOR = "  ·  "
     FOOTER_HINTS = ["? help", "space pause", "/ search", "o open", "q quit"]
 
     def __init__(
@@ -136,6 +139,11 @@ class BlessedMusicPlayer:
         self._spectrum_history: List[List[float]] = []
         self._pending_seek: Optional[Tuple[str, float]] = None
         self._power_inhibitor: Optional[subprocess.Popen[bytes]] = None
+        self._spectrum_mode: Optional[str] = None  # "run" | "freeze" | "clear"
+        self._help_visible = False
+        self._timeline_hit: Optional[Tuple[int, int, int]] = None  # row, first column, width
+        self._summary_hits: List[Tuple[int, int, str]] = []  # first column, end column, action
+        self._scrubbing = False
 
     async def run(self) -> None:
         """Run the main async event loop with Blessed context managers."""
@@ -165,7 +173,7 @@ class BlessedMusicPlayer:
 
         # Enter blessed fullscreen mode with mouse click support
         with self.term.fullscreen(), self.term.cbreak(), self.term.hidden_cursor(), \
-                self.term.mouse_enabled():
+                self.term.mouse_enabled(report_drag=True):
             render_task = asyncio.create_task(self._render_loop())
             input_task = asyncio.create_task(self._input_loop())
             mpv_task = asyncio.create_task(self._mpv_poll_loop())
@@ -334,6 +342,7 @@ class BlessedMusicPlayer:
         self._is_paused = False
         self._is_buffering = True
         self._mpv_idle = False
+        self._spectrum_mode = None
 
         if self.mpv:
             try:
@@ -355,6 +364,45 @@ class BlessedMusicPlayer:
             self.spectrum.resume()
 
         self.previewer.request(track)
+
+    def _set_spectrum_mode(self, mode: str) -> None:
+        """Run, freeze, or clear the visualizer, applying changes only on transitions."""
+        if mode == self._spectrum_mode:
+            return
+        self._spectrum_mode = mode
+        if mode == "run":
+            self.spectrum.resume()
+        elif mode == "freeze":
+            self.spectrum.freeze()
+        else:
+            self.spectrum.pause()
+
+    def _shuffle_queue(self) -> None:
+        self.queue.shuffle()
+
+    def _cycle_repeat(self) -> None:
+        self.queue.repeat_mode = self.queue.repeat_mode.next_mode()
+
+    def _activate_summary(self, action: str) -> None:
+        """Run the control behind a clicked dashboard summary icon."""
+        if action == "shuffle":
+            self._shuffle_queue()
+        elif action == "repeat":
+            self._cycle_repeat()
+
+    def _seek_to_column(self, column: int) -> None:
+        """Jump to the point of the track under a mouse column on the progress bar."""
+        if not self._timeline_hit or not self.mpv or self._duration <= 0:
+            return
+        _row, bar_x, bar_width = self._timeline_hit
+        fraction = max(0.0, min(1.0, (column - bar_x) / max(1, bar_width - 1)))
+        target = fraction * self._duration
+        try:
+            self.mpv.command("seek", target, "absolute")
+            self._time_pos = target
+        except Exception as err:
+            self._status_msg = f"Seek failed: {err}"
+            logger.warning("MPV seek failed: %s", err)
 
     def _set_power_inhibit(self, active: bool) -> None:
         if active:
@@ -467,13 +515,14 @@ class BlessedMusicPlayer:
                     if self._time_pos > 0.0 and self.queue.current_track:
                         self._failed_track_ids.discard(self.queue.current_track.id)
 
-                    # Auto-pause visualizer when source is gone/buffering, resume when playing
+                    # Run the visualizer while playing, freeze it on pause, clear it otherwise
                     if self._show_visualizer:
-                        source_active = not (self._is_buffering or self._is_paused or self._mpv_idle)
-                        if source_active and not self.spectrum.enabled:
-                            self.spectrum.resume()
-                        elif not source_active and self.spectrum.enabled:
-                            self.spectrum.pause()
+                        if self._is_buffering or self._mpv_idle:
+                            self._set_spectrum_mode("clear")
+                        elif self._is_paused:
+                            self._set_spectrum_mode("freeze")
+                        else:
+                            self._set_spectrum_mode("run")
 
                     # Periodically save playback state every 3 seconds. The write locks and
                     # fsyncs, so it runs in an executor to keep the UI loop responsive.
@@ -504,7 +553,13 @@ class BlessedMusicPlayer:
             self._handle_key(key)
 
     def _handle_key(self, key: Any) -> None:
-        self._render_requested.set()
+        """Dispatch a key and request a redraw only if it changed what is on screen."""
+        before = self._render_signature()
+        self._dispatch_key(key)
+        if self._render_signature() != before:
+            self._render_requested.set()
+
+    def _dispatch_key(self, key: Any) -> None:
         key_name = getattr(key, "name", None) or ""
         # Input mode active (Live Fuzzy Search / URL prompt)
         if self._input_mode != "none":
@@ -580,9 +635,9 @@ class BlessedMusicPlayer:
             if prev is not None:
                 self._play_index(prev)
         elif key in ("s", "S"):
-            self.queue.shuffle()
+            self._shuffle_queue()
         elif key in ("r", "R"):
-            self.queue.repeat_mode = self.queue.repeat_mode.next_mode()
+            self._cycle_repeat()
         elif (self._vim_mode and key == "h") or (
             not self._vim_mode and key_name == "KEY_LEFT"
         ):
@@ -641,6 +696,7 @@ class BlessedMusicPlayer:
                     logger.warning("MPV mute failed: %s", err)
         elif key == "v":
             self._show_visualizer = not self._show_visualizer
+            self._spectrum_mode = None
             save_visualizer_preferences(self._spectrum_style, self._show_visualizer, self.config_file)
             if self._show_visualizer:
                 self.spectrum.resume()
@@ -684,28 +740,51 @@ class BlessedMusicPlayer:
             self._handle_mouse(key)
 
     def _handle_mouse(self, key: Any) -> None:
-        """Handle track-list clicks and mouse wheel navigation."""
+        """Handle progress-bar seeking, summary icons, track-list clicks, and wheel navigation."""
         try:
-            _mouse_x, mouse_y = key.mouse_xy  # (x, y) — 0-indexed
+            mouse_x, mouse_y = key.mouse_xy  # (x, y) — 0-indexed
         except (AttributeError, TypeError, ValueError):
             logger.debug("Ignoring malformed mouse event", exc_info=True)
             return
 
-        # Check if click landed in the track list area
+        mouse_name = getattr(key, "name", "")
+        if mouse_name == "MOUSE_LEFT_RELEASED":
+            self._scrubbing = False
+            return
+        if mouse_name == "MOUSE_LEFT_MOTION":
+            if self._scrubbing:
+                self._seek_to_column(mouse_x)
+            return
+
+        is_left_click = mouse_name == "MOUSE_LEFT" or bool(getattr(key, "is_mouse_left", lambda: False)())
+        if is_left_click:
+            self._scrubbing = False
+            if self._timeline_hit:
+                bar_row, bar_x, bar_width = self._timeline_hit
+                if mouse_y == bar_row and bar_x <= mouse_x < bar_x + bar_width:
+                    self._scrubbing = True
+                    self._seek_to_column(mouse_x)
+                    return
+            if mouse_y == 0:
+                for start, end, action in self._summary_hits:
+                    if start <= mouse_x < end:
+                        self._activate_summary(action)
+                        return
+
+        # Check if the event landed in the track list area
         if self._list_height <= 0:
             return
         list_end_row = self._list_top_row + self._list_height
         if not (self._list_top_row <= mouse_y < list_end_row):
             return
 
-        mouse_name = getattr(key, "name", "")
         if mouse_name in {"MOUSE_SCROLL_UP", "MOUSE_WHEEL_UP"}:
             self._move_list_selection(-1)
             return
         if mouse_name in {"MOUSE_SCROLL_DOWN", "MOUSE_WHEEL_DOWN"}:
             self._move_list_selection(1)
             return
-        if not (mouse_name == "MOUSE_LEFT" or key.is_mouse_left()):
+        if not is_left_click:
             return
 
         # Map screen row to filtered list index
@@ -733,7 +812,10 @@ class BlessedMusicPlayer:
 
     def _render_spectrum_lines(self, bands: List[float], height: int, width: int) -> List[str]:
         if self._spectrum_style == "waterfall":
-            self._spectrum_history.append(bands)
+            if self.spectrum.enabled:
+                self._spectrum_history.append(bands)
+            elif self._spectrum_mode != "freeze":
+                self._spectrum_history.clear()
             self._spectrum_history = self._spectrum_history[-height:]
             padding = [[0.0] * width] * max(0, height - len(self._spectrum_history))
             rows = padding + self._spectrum_history
@@ -776,16 +858,24 @@ class BlessedMusicPlayer:
                     lines[row][col] = "▁▂▃▄▅▆▇"[row_level - 1]
         return ["".join(line) for line in lines]
 
+    def _visualizer_animating(self) -> bool:
+        """True while the spectrum is live; a frozen or cleared one is static."""
+        return self._show_visualizer and not self._show_help and bool(self.spectrum.enabled)
+
     async def _render_loop(self) -> None:
         while self._running:
             signature = self._render_signature()
-            if self._show_visualizer or signature != self._last_render_signature:
+            if signature != self._last_render_signature or self._visualizer_animating():
                 self._render()
                 self._last_render_signature = signature
-            delay = self._render_delay()
             self._render_requested.clear()
+            # Coalesce bursts of input (e.g. a scroll-wheel flood) into one redraw per interval.
+            await asyncio.sleep(self.MIN_RENDER_INTERVAL)
             try:
-                await asyncio.wait_for(self._render_requested.wait(), timeout=delay)
+                await asyncio.wait_for(
+                    self._render_requested.wait(),
+                    timeout=max(0.0, self._render_delay() - self.MIN_RENDER_INTERVAL),
+                )
             except asyncio.TimeoutError:
                 pass
 
@@ -801,6 +891,7 @@ class BlessedMusicPlayer:
             self.term.height,
             self.queue.current_idx,
             len(self.queue.tracks),
+            self.queue.revision,
             self._selected_list_idx,
             self._scroll_offset,
             self._input_mode,
@@ -810,6 +901,8 @@ class BlessedMusicPlayer:
             self._is_loading_playlist,
             self._is_buffering,
             self._mpv_idle,
+            self._show_visualizer,
+            self._spectrum_style,
             self._show_preview,
             self._vim_mode,
             self._show_help,
@@ -844,6 +937,7 @@ class BlessedMusicPlayer:
             "   Enter       Play selected track",
             "   /           Search tracks",
             "   o           Open a YouTube URL",
+            "   Click       Progress bar seeks, repeat/shuffle icons toggle",
             "",
             f" Vim mode: {'enabled' if self._vim_mode else 'disabled'} (V toggles it)",
             "",
@@ -866,12 +960,18 @@ class BlessedMusicPlayer:
         marker = round(max(0.0, min(1.0, progress)) * (width - 1))
         return "━" * marker + "●" + "─" * (width - marker - 1)
 
+    def _summary_segments(self) -> List[Tuple[str, str]]:
+        """Dashboard summary pieces as (text, click action); an empty action is not clickable."""
+        volume_icon = "\U000f075f" if self._is_muted else "\uf028"
+        return [
+            (f"{volume_icon} {self._volume}%", ""),
+            (self.queue.repeat_mode.icon, "repeat"),
+            (self.SHUFFLE_ICON, "shuffle"),
+            (f"\U000f0386 {len(self.queue.tracks)}", ""),
+        ]
+
     def _dashboard_summary(self) -> str:
-        volume_icon = "󰝟" if self._is_muted else ""
-        return (
-            f"{volume_icon} {self._volume}%  ·  {self.queue.repeat_mode.icon}"
-            f"  ·  󰎆 {len(self.queue.tracks)}"
-        )
+        return self.SUMMARY_SEPARATOR.join(text for text, _action in self._summary_segments())
 
     def _render(self) -> None:
         term = self.term
@@ -881,14 +981,24 @@ class BlessedMusicPlayer:
             self._last_render_size = (w, h)
         if h < 10 or w < 30:
             self._list_height = 0
+            self._timeline_hit = None
+            self._summary_hits = []
             print(term.home + term.red("Terminal window too small!"), end="", flush=True)
             return
 
         if self._show_help:
+            if not self._help_visible:
+                self._help_visible = True
+                self.previewer.clear()
             self._render_help()
             return
 
         out: List[str] = [term.home]
+        if self._help_visible:
+            # Wipe leftover help text and any stale thumbnail before redrawing the dashboard.
+            self._help_visible = False
+            self.previewer.clear()
+            out = [term.clear + term.home]
         row = 0
 
         # Animated Spinner
@@ -909,8 +1019,14 @@ class BlessedMusicPlayer:
         summary = self._dashboard_summary()
         left = f" {state}  {title}"
         summary_col = w - len(summary) - 1
+        self._summary_hits = []
         if summary_col >= 24:
             header = term.bold_white(left[: summary_col - 2]) + term.move_xy(summary_col, row) + term.cyan(summary)
+            column = summary_col
+            for text, action in self._summary_segments():
+                if action:
+                    self._summary_hits.append((column, column + len(text), action))
+                column += len(text) + len(self.SUMMARY_SEPARATOR)
         else:
             header = term.bold_white(left[: w - 1])
         out.append(term.move_xy(0, row) + header + term.clear_eol)
@@ -926,6 +1042,7 @@ class BlessedMusicPlayer:
         bar_width = max(5, w - len(elapsed) - len(duration) - 5)
         pct = (self._time_pos / self._duration) if self._duration > 0 else 0.0
         bar_str = self._progress_meter(bar_width, pct)
+        self._timeline_hit = (row, len(elapsed) + 2, bar_width)
         out.append(
             term.move_xy(0, row)
             + term.white(f" {elapsed} ")
@@ -1023,4 +1140,5 @@ class BlessedMusicPlayer:
             footer = candidate
         out.append(term.move_xy(0, footer_row) + term.dim(footer) + term.clear_eol)
 
+        out.append(term.hide_cursor)
         print("".join(out), end="", flush=True)

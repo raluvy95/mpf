@@ -177,12 +177,15 @@ class TrackQueue:
         self.repeat_mode: RepeatMode = RepeatMode.ALL
         self._search_filter: str = ""
         self._filtered_cache: Optional[List[Tuple[int, Track]]] = None
+        # Bumped on every change to the visible queue so the UI can skip no-op redraws.
+        self.revision: int = 0
 
     def set_tracks(self, tracks: List[Track], reset_index: bool = True) -> None:
         current_id = self.current_track.id if self.current_track else None
         old_index = self.current_idx
         self.tracks = list(tracks)
         self._filtered_cache = None
+        self.revision += 1
         if reset_index or not self.tracks:
             self.current_idx = 0
         elif current_id:
@@ -214,6 +217,7 @@ class TrackQueue:
             return
         self._search_filter = query
         self._filtered_cache = None
+        self.revision += 1
 
     def clear_filter(self) -> None:
         self.set_filter("")
@@ -242,6 +246,7 @@ class TrackQueue:
         curr = self.current_track
         random.shuffle(self.tracks)
         self._filtered_cache = None
+        self.revision += 1
         if curr and curr in self.tracks:
             self.current_idx = self.tracks.index(curr)
         else:

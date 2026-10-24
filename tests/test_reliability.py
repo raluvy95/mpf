@@ -10,8 +10,10 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import AsyncMock, MagicMock, patch
+from contextlib import redirect_stdout
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
+from blessed import Terminal
 from blessed.keyboard import Keystroke
 
 from mpf_core.cache import (
@@ -225,6 +227,7 @@ class TestPlayerFailureHandling(unittest.TestCase):
         self.assertEqual(self.player.queue.current_track.id, "b")
 
     def test_navigation_requests_immediate_render(self):
+        self.player._vim_mode = True
         self.player._render_requested.clear()
 
         self.player._handle_key("j")
@@ -485,6 +488,250 @@ class TestIdleAndBufferingState(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(player._mpv_idle)
         self.assertTrue(player._is_buffering)
+
+
+def _mouse(name, x, y):
+    return type(
+        "Mouse",
+        (),
+        {"name": name, "mouse_xy": (x, y), "is_mouse_left": lambda self: name == "MOUSE_LEFT"},
+    )()
+
+
+class TestVisualizerOnPause(unittest.IsolatedAsyncioTestCase):
+    async def _mode_after_poll(self, paused, **mpv_props):
+        with patch("mpf_core.player.MPV"):
+            player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        self.addCleanup(player.previewer.close)
+        player.queue = TrackQueue([Track("a", "Song A")])
+        player._show_visualizer = True
+        player._is_paused = paused
+        player.spectrum = MagicMock(enabled=True)
+        player.mpv = MagicMock(time_pos=5.0, duration=100.0, paused_for_cache=False, **mpv_props)
+        task = asyncio.create_task(player._mpv_poll_loop())
+        await asyncio.sleep(0.05)
+        player._running = False
+        with patch("mpf_core.player.save_playback_state"):
+            await task
+        return player.spectrum
+
+    async def test_pausing_freezes_the_visualizer_instead_of_clearing_it(self):
+        spectrum = await self._mode_after_poll(True, core_idle=True, idle_active=False)
+
+        spectrum.freeze.assert_called_once()
+        spectrum.pause.assert_not_called()
+
+    async def test_nothing_loaded_clears_the_visualizer(self):
+        spectrum = await self._mode_after_poll(False, core_idle=True, idle_active=True)
+
+        spectrum.pause.assert_called_once()
+        spectrum.freeze.assert_not_called()
+
+    async def test_playing_runs_the_visualizer(self):
+        spectrum = await self._mode_after_poll(False, core_idle=False, idle_active=False)
+
+        spectrum.resume.assert_called_once()
+
+    def test_frozen_waterfall_holds_its_rows_and_cleared_one_goes_blank(self):
+        with patch("mpf_core.player.MPV"):
+            player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        self.addCleanup(player.previewer.close)
+        player._spectrum_style = "waterfall"
+        player.spectrum = MagicMock(enabled=False)
+        rows = [[0.5] * 4, [0.9] * 4]
+        player._spectrum_history = [list(row) for row in rows]
+
+        player._spectrum_mode = "freeze"
+        frozen = player._render_spectrum_lines([0.1] * 4, 2, 4)
+        self.assertEqual(player._spectrum_history, rows)
+        self.assertTrue("".join(frozen).strip())
+
+        player._spectrum_mode = "clear"
+        cleared = player._render_spectrum_lines([0.1] * 4, 2, 4)
+        self.assertEqual(player._spectrum_history, [])
+        self.assertFalse("".join(cleared).strip())
+
+        player.spectrum.enabled = True
+        player._render_spectrum_lines([0.1] * 4, 2, 4)
+        self.assertEqual(len(player._spectrum_history), 1)
+
+
+class TestMouseControls(unittest.TestCase):
+    def setUp(self):
+        with patch("mpf_core.player.MPV"):
+            self.player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        self.addCleanup(self.player.previewer.close)
+        self.player.queue = TrackQueue([Track("a", "A"), Track("b", "B"), Track("c", "C")])
+        self.player.mpv = MagicMock()
+        self.player._duration = 100.0
+        self.player._timeline_hit = (2, 7, 85)  # row, first column, width
+
+    def test_click_on_the_progress_bar_jumps_to_that_point(self):
+        self.player._handle_mouse(_mouse("MOUSE_LEFT", 7 + 42, 2))  # 42 of 84 cells: halfway
+
+        self.player.mpv.command.assert_called_once_with("seek", 50.0, "absolute")
+        self.assertEqual(self.player._time_pos, 50.0)
+
+    def test_click_at_either_end_of_the_bar_seeks_to_start_and_end(self):
+        self.player._handle_mouse(_mouse("MOUSE_LEFT", 7, 2))
+        self.player._handle_mouse(_mouse("MOUSE_LEFT", 7 + 84, 2))
+
+        self.assertEqual(
+            [call.args for call in self.player.mpv.command.call_args_list],
+            [("seek", 0.0, "absolute"), ("seek", 100.0, "absolute")],
+        )
+
+    def test_dragging_scrubs_until_release_and_clamps_outside_the_bar(self):
+        self.player._handle_mouse(_mouse("MOUSE_LEFT", 7 + 21, 2))
+        self.player._handle_mouse(_mouse("MOUSE_LEFT_MOTION", 7 + 63, 3))  # may leave the row
+        self.player._handle_mouse(_mouse("MOUSE_LEFT_MOTION", 200, 2))  # past the right edge
+        self.player._handle_mouse(_mouse("MOUSE_LEFT_RELEASED", 200, 2))
+        self.player._handle_mouse(_mouse("MOUSE_LEFT_MOTION", 7 + 10, 2))  # after release: ignored
+
+        self.assertEqual(
+            [call.args[1] for call in self.player.mpv.command.call_args_list], [25.0, 75.0, 100.0]
+        )
+
+    def test_clicks_that_miss_the_bar_or_have_no_duration_do_not_seek(self):
+        self.player._handle_mouse(_mouse("MOUSE_LEFT", 3, 2))  # on the elapsed-time label
+        self.player._handle_mouse(_mouse("MOUSE_LEFT", 7 + 90, 2))  # past the bar
+        self.player._handle_mouse(_mouse("MOUSE_LEFT", 20, 5))  # another row
+        self.player._duration = 0.0
+        self.player._handle_mouse(_mouse("MOUSE_LEFT", 20, 2))
+
+        self.player.mpv.command.assert_not_called()
+
+    def test_clicking_summary_icons_cycles_repeat_and_shuffles(self):
+        self.player._summary_hits = [(80, 82, "repeat"), (85, 87, "shuffle")]
+        before = self.player.queue.repeat_mode
+
+        self.player._handle_mouse(_mouse("MOUSE_LEFT", 81, 0))
+        self.assertEqual(self.player.queue.repeat_mode, before.next_mode())
+
+        with patch.object(self.player.queue, "shuffle") as shuffle:
+            self.player._handle_mouse(_mouse("MOUSE_LEFT", 83, 0))  # between icons
+            shuffle.assert_not_called()
+            self.player._handle_mouse(_mouse("MOUSE_LEFT", 86, 0))
+            shuffle.assert_called_once()
+
+    def test_render_publishes_click_targets(self):
+        player = self.player
+        player._show_visualizer = False
+        out = io.StringIO()
+        with patch.object(Terminal, "height", new_callable=PropertyMock, return_value=30), patch.object(
+            Terminal, "width", new_callable=PropertyMock, return_value=100
+        ), redirect_stdout(out):
+            player.term = Terminal(force_styling=True, kind="xterm-256color")
+            player._render()
+
+        row, bar_x, bar_width = player._timeline_hit
+        self.assertEqual((row, bar_x), (2, len("00:00") + 2))
+        self.assertEqual({action for _s, _e, action in player._summary_hits}, {"repeat", "shuffle"})
+        for start, end, _action in player._summary_hits:
+            self.assertGreater(end, start)
+            self.assertLessEqual(end, 100)
+
+
+class TestRenderProtection(unittest.TestCase):
+    def setUp(self):
+        with patch("mpf_core.player.MPV"):
+            self.player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        self.addCleanup(self.player.previewer.close)
+        self.player.queue = TrackQueue([Track("a", "A"), Track("b", "B"), Track("c", "C")])
+        self.player._vim_mode = True
+        self.player._list_top_row = 4
+        self.player._list_height = 3
+
+    def test_scrolling_past_the_last_track_requests_no_redraw(self):
+        self.player._selected_list_idx = 2
+        wheel = _mouse("MOUSE_SCROLL_DOWN", 5, 5)
+        for event in ("j", wheel, wheel, "j", "x"):
+            self.player._render_requested.clear()
+            self.player._handle_key(event)
+            self.assertFalse(self.player._render_requested.is_set(), event)
+
+    def test_scrolling_past_the_first_track_requests_no_redraw(self):
+        for event in ("k", _mouse("MOUSE_SCROLL_UP", 5, 5)):
+            self.player._render_requested.clear()
+            self.player._handle_key(event)
+            self.assertFalse(self.player._render_requested.is_set())
+
+    def test_real_changes_still_request_a_redraw(self):
+        for event, expected in (("j", 1), (_mouse("MOUSE_SCROLL_DOWN", 5, 5), 2), ("k", 1), ("s", None)):
+            self.player._render_requested.clear()
+            self.player._handle_key(event)
+            self.assertTrue(self.player._render_requested.is_set(), event)
+            if expected is not None:
+                self.assertEqual(self.player._selected_list_idx, expected)
+
+    def test_static_screens_are_not_redrawn_but_a_live_spectrum_is(self):
+        player = self.player
+        player.spectrum = MagicMock(enabled=False)
+        player._show_visualizer = True
+        self.assertFalse(player._visualizer_animating())
+        player.spectrum.enabled = True
+        self.assertTrue(player._visualizer_animating())
+        player._show_help = True
+        self.assertFalse(player._visualizer_animating())
+
+    def test_signature_changes_with_style_visibility_and_queue_order(self):
+        player = self.player
+        base = player._render_signature()
+        player._spectrum_style = "bars"
+        self.assertNotEqual(player._render_signature(), base)
+        base = player._render_signature()
+        player._show_visualizer = not player._show_visualizer
+        self.assertNotEqual(player._render_signature(), base)
+        base = player._render_signature()
+        player.queue.shuffle()
+        self.assertNotEqual(player._render_signature(), base)
+
+    def test_visualizer_toggle_requests_a_redraw(self):
+        self.player._render_requested.clear()
+        self.player._handle_key("v")
+        self.assertTrue(self.player._render_requested.is_set())
+
+
+class TestRenderOutput(unittest.TestCase):
+    def _player(self):
+        with patch("mpf_core.player.MPV"):
+            player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        self.addCleanup(player.previewer.close)
+        player.queue = TrackQueue([Track("a", "A"), Track("b", "B")])
+        player.previewer = MagicMock()
+        player._show_visualizer = False
+        return player
+
+    def _render(self, player):
+        out = io.StringIO()
+        with patch.object(Terminal, "height", new_callable=PropertyMock, return_value=30), patch.object(
+            Terminal, "width", new_callable=PropertyMock, return_value=100
+        ), redirect_stdout(out):
+            player.term = Terminal(force_styling=True, kind="xterm-256color")
+            player._render()
+        return out.getvalue(), player.term
+
+    def test_closing_help_wipes_the_screen_and_stale_thumbnail(self):
+        player = self._player()
+        player._show_help = True
+        self._render(player)
+        player.previewer.clear.assert_called()  # entering help drops the graphic
+
+        player.previewer.clear.reset_mock()
+        player._show_help = False
+        output, term = self._render(player)
+
+        player.previewer.clear.assert_called()
+        self.assertTrue(output.startswith(term.clear + term.home))
+
+        output, term = self._render(player)  # an ordinary frame must not wipe the screen
+        self.assertFalse(output.startswith(term.clear))
+
+    def test_every_frame_ends_with_the_cursor_hidden(self):
+        player = self._player()
+        output, term = self._render(player)
+
+        self.assertTrue(output.endswith(term.hide_cursor))
 
 
 if __name__ == "__main__":

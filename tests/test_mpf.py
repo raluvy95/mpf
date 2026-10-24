@@ -225,6 +225,19 @@ class TestTrackQueue(unittest.TestCase):
         self.queue.clear_filter()
         self.assertEqual(len(self.queue.filtered_tracks), 3)
 
+    def test_revision_changes_only_when_the_visible_queue_changes(self):
+        revisions = [self.queue.revision]
+        self.queue.set_filter("a")
+        revisions.append(self.queue.revision)
+        self.queue.set_filter("a")  # unchanged query
+        self.assertEqual(self.queue.revision, revisions[-1])
+        self.queue.shuffle()
+        revisions.append(self.queue.revision)
+        self.queue.set_tracks(list(self.queue.tracks))
+        revisions.append(self.queue.revision)
+
+        self.assertEqual(revisions, sorted(set(revisions)))
+
     def test_filtered_tracks_reuses_results_until_queue_or_query_changes(self):
         self.queue.set_filter("song")
         first = self.queue.filtered_tracks
@@ -321,6 +334,21 @@ class TestKittyPreviewer(unittest.TestCase):
                 previewer.render(Track("track", "Track"), 2, 1, 10, 5)
             clear.assert_called_once()
 
+    def test_render_skips_icat_terminal_autodetection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image = os.path.join(tmpdir, "fallback.svg")
+            with open(image, "w", encoding="utf-8") as file:
+                file.write("<svg/>")
+            previewer = KittyPreviewer(thumbs_dir=tmpdir, fallback_icon=image)
+            self.addCleanup(previewer.close)
+            previewer.has_kitty = True
+            with patch(
+                "mpf_core.previewer.subprocess.run", return_value=MagicMock(returncode=0)
+            ) as run:
+                previewer.render(Track("track", "Track"), 2, 1, 10, 5)
+            # Auto-detection resets cursor/mouse modes and reads the reply from stdin.
+            self.assertIn("--transfer-mode=stream", run.call_args.args[0])
+
     def test_render_bounds_kitty_with_timeout_and_survives_hang(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             image = os.path.join(tmpdir, "fallback.svg")
@@ -341,6 +369,23 @@ class TestSpectrumAnalyzer(unittest.TestCase):
     def test_startup_disabled_state(self):
         analyzer = PipeWireSpectrumAnalyzer(num_bands=16, target_node="mpv")
         self.assertFalse(analyzer.enabled)
+
+    def test_freeze_keeps_last_frame_while_pause_clears_it(self):
+        analyzer = PipeWireSpectrumAnalyzer(num_bands=4)
+        analyzer.bands[:] = [0.2, 0.4, 0.6, 0.8]
+        analyzer.peaks[:] = [0.3, 0.5, 0.7, 0.9]
+        analyzer.resume()
+
+        analyzer.freeze()
+
+        self.assertFalse(analyzer.enabled)
+        self.assertEqual(analyzer.bands.tolist(), np.array([0.2, 0.4, 0.6, 0.8], dtype=np.float32).tolist())
+        self.assertGreater(analyzer.peaks.max(), 0)
+
+        analyzer.pause()
+
+        self.assertEqual(analyzer.bands.sum(), 0)
+        self.assertEqual(analyzer.peaks.sum(), 0)
 
     def test_target_node_command(self):
         analyzer = PipeWireSpectrumAnalyzer(num_bands=16, target_node="mpv")
@@ -720,10 +765,10 @@ class TestPlayerQualityOfLife(unittest.TestCase):
         player.queue.set_tracks([Track("1", "One"), Track("2", "Two")])
         player._volume = 42
 
-        self.assertEqual(player._dashboard_summary(), " 42%  ·  󰑖  ·  󰎆 2")
+        self.assertEqual(player._dashboard_summary(), " 42%  ·  󰑖  ·  󰒟  ·  󰎆 2")
 
         player._is_muted = True
-        self.assertEqual(player._dashboard_summary(), "󰝟 42%  ·  󰑖  ·  󰎆 2")
+        self.assertEqual(player._dashboard_summary(), "󰝟 42%  ·  󰑖  ·  󰒟  ·  󰎆 2")
 
     def test_help_overlay_opens_and_closes_with_question_mark_or_escape(self):
         from mpf_core.player import BlessedMusicPlayer

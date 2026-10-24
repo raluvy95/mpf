@@ -185,6 +185,9 @@ class KittyPreviewer:
                 "icat",
                 "--silent",
                 "--scale-up",
+                # Skip icat's terminal auto-detection: it resets cursor/mouse modes and
+                # reads the terminal's reply from stdin, racing the player's own input.
+                "--transfer-mode=stream",
                 f"--place={width}x{height}@{x}x{y}",
                 img_path,
             ]

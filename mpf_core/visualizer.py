@@ -60,7 +60,14 @@ class PipeWireSpectrumAnalyzer:
         self._thread = None
 
     def pause(self) -> None:
-        """Pause audio capture and kill backend recording subprocess."""
+        """Stop audio capture and clear the display."""
+        self.freeze()
+        with self._lock:
+            self.bands.fill(0.0)
+            self.peaks.fill(0.0)
+
+    def freeze(self) -> None:
+        """Stop audio capture but keep the last frame, e.g. while playback is paused."""
         self.enabled = False
         with self._process_lock:
             process = self._process
@@ -74,9 +81,6 @@ class PipeWireSpectrumAnalyzer:
                 process.wait(timeout=0.5)
             except OSError as err:
                 logger.debug("Unable to stop audio capture process: %s", err)
-        with self._lock:
-            self.bands.fill(0.0)
-            self.peaks.fill(0.0)
 
     def resume(self) -> None:
         """Resume audio capture."""

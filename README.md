@@ -114,6 +114,8 @@ Press `?` in MPF for the full in-app reference.
 | `t` | Toggle thumbnail preview |
 | `V` | Toggle Vim navigation mode |
 | Mouse wheel, click, or Enter | Select and play a track |
+| Click or drag the progress bar | Jump to that point in the track |
+| Click the repeat or shuffle icon | Cycle repeat mode, or shuffle the queue |
 
 Vim mode uses `j`/`k` to browse and `h`/`l` to seek 5 seconds. Standard mode
 uses the arrow keys instead. The two navigation modes are intentionally
