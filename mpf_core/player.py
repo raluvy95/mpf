@@ -80,10 +80,7 @@ class BlessedMusicPlayer:
     BRAILLE_RIGHT = (0x8, 0x10, 0x20, 0x80)
     VISUALIZER_RENDER_INTERVAL = 1 / 15
     IDLE_RENDER_INTERVAL = 0.1
-    FOOTER_HINTS = [
-        "? help", "space pause", "enter play", "↑/↓ browse", "/ search",
-        "o open", "n/p track", "←/→ seek", "+/- volume", "q quit",
-    ]
+    FOOTER_HINTS = ["? help", "space pause", "/ search", "o open", "q quit"]
 
     def __init__(
         self,
@@ -107,6 +104,7 @@ class BlessedMusicPlayer:
         self._is_paused = False
         self._is_muted = False
         self._is_buffering = False
+        self._mpv_idle = True  # no file loaded or loading in mpv
         self._is_loading_playlist = False
         self._volume = 100
         self._spectrum_style, configured_visualizer = load_visualizer_preferences(config_file)
@@ -335,6 +333,7 @@ class BlessedMusicPlayer:
         track = self.queue.tracks[index]
         self._is_paused = False
         self._is_buffering = True
+        self._mpv_idle = False
 
         if self.mpv:
             try:
@@ -461,13 +460,16 @@ class BlessedMusicPlayer:
                     # Check real MPV cache/stall state
                     is_caching = getattr(self.mpv, "paused_for_cache", False)
                     core_idle = getattr(self.mpv, "core_idle", False)
-                    self._is_buffering = bool(is_caching or (core_idle and not self._is_paused and self._time_pos == 0.0))
+                    self._mpv_idle = bool(getattr(self.mpv, "idle_active", False))
+                    self._is_buffering = not self._mpv_idle and bool(
+                        is_caching or (core_idle and not self._is_paused and self._time_pos == 0.0)
+                    )
                     if self._time_pos > 0.0 and self.queue.current_track:
                         self._failed_track_ids.discard(self.queue.current_track.id)
 
                     # Auto-pause visualizer when source is gone/buffering, resume when playing
                     if self._show_visualizer:
-                        source_active = not self._is_buffering and not self._is_paused
+                        source_active = not (self._is_buffering or self._is_paused or self._mpv_idle)
                         if source_active and not self.spectrum.enabled:
                             self.spectrum.resume()
                         elif not source_active and self.spectrum.enabled:
@@ -807,6 +809,7 @@ class BlessedMusicPlayer:
             self._is_muted,
             self._is_loading_playlist,
             self._is_buffering,
+            self._mpv_idle,
             self._show_preview,
             self._vim_mode,
             self._show_help,
@@ -870,14 +873,6 @@ class BlessedMusicPlayer:
             f"  ·  󰎆 {len(self.queue.tracks)}"
         )
 
-    def _queue_heading(self, filtered_count: int) -> str:
-        count = (
-            f"{filtered_count}/{len(self.queue.tracks)}"
-            if self._input_buffer
-            else str(len(self.queue.tracks))
-        )
-        return f"  {count} "
-
     def _render(self) -> None:
         term = self.term
         h, w = term.height, term.width
@@ -899,37 +894,30 @@ class BlessedMusicPlayer:
         # Animated Spinner
         spinner = SPINNER_FRAMES[int(time.time() * 10) % len(SPINNER_FRAMES)]
 
-        # 1. Dashboard header and now-playing details
+        # 1. Now playing: state icon and title, with the summary right-aligned
         curr_track = self.queue.current_track
-        if self._is_loading_playlist:
-            state = f"{spinner} LOADING"
-        elif self._is_buffering and curr_track:
-            state = f"{spinner} BUFFERING"
+        if self._is_loading_playlist or (self._is_buffering and curr_track):
+            state = spinner
         elif self._is_paused:
-            state = "Ⅱ PAUSED"
-        elif curr_track:
-            state = "▶ PLAYING"
+            state = "Ⅱ"
+        elif curr_track and not self._mpv_idle:
+            state = "▶"
         else:
-            state = "■ IDLE"
-
-        summary = self._dashboard_summary()
-        brand = f" MPF  {state}"
-        gap = max(2, w - len(brand) - len(summary) - 1)
-        header_text = brand + (" " * gap + summary if gap > 2 else "")
-        out.append(term.move_xy(0, row) + term.bold_cyan(header_text[: w - 1]) + term.clear_eol)
-        row += 1
+            state = "■"
 
         title = curr_track.title if curr_track else "Nothing playing"
-        out.append(
-            term.move_xy(0, row)
-            + term.cyan(" 󰎈  ")
-            + term.bold_white(title[: max(0, w - 15)])
-            + term.clear_eol
-        )
+        summary = self._dashboard_summary()
+        left = f" {state}  {title}"
+        summary_col = w - len(summary) - 1
+        if summary_col >= 24:
+            header = term.bold_white(left[: summary_col - 2]) + term.move_xy(summary_col, row) + term.cyan(summary)
+        else:
+            header = term.bold_white(left[: w - 1])
+        out.append(term.move_xy(0, row) + header + term.clear_eol)
         row += 1
 
         detail = curr_track.uploader if curr_track and curr_track.uploader else self._status_msg
-        out.append(term.move_xy(0, row) + term.white(f" {detail}"[: w - 1]) + term.clear_eol)
+        out.append(term.move_xy(0, row) + term.dim(f"    {detail}"[: w - 1]) + term.clear_eol)
         row += 1
 
         # 2. Timeline
@@ -949,19 +937,10 @@ class BlessedMusicPlayer:
 
         # 3. Side-by-side artwork and spectrum
         preview_width = 16
-        show_preview_box = self._show_preview and w >= 55 and h >= 18
+        show_preview_box = self._show_preview and w >= 55 and h >= 16
 
-        if self._show_visualizer and h >= 18:
-            panel_label = " " if show_preview_box else ""
-            viz_label_col = preview_width + 4 if show_preview_box else 2
-            out.append(term.move_xy(0, row) + term.cyan(panel_label))
-            out.append(
-                term.move_xy(viz_label_col, row)
-                + term.cyan(f"󰓃  {self._spectrum_style.upper()}")
-                + term.clear_eol
-            )
-            row += 1
-            spec_height = min(10, h - row - 8)
+        if self._show_visualizer and h >= 16:
+            spec_height = min(8, h - row - 6)
             if spec_height >= 3:
                 if show_preview_box:
                     for r_idx in range(spec_height):
@@ -991,52 +970,22 @@ class BlessedMusicPlayer:
 
         # 4. Input prompt
         if self._input_mode != "none":
-            prompt_label = "SEARCH" if self._input_mode == "search" else "OPEN URL"
-            input_text = f" {prompt_label}  {self._input_buffer}█"
+            prompt_label = "/" if self._input_mode == "search" else "open "
+            input_text = f" {prompt_label}{self._input_buffer}█"
+            if self._input_mode == "search" and self._input_buffer:
+                input_text += f"   {len(self.queue.filtered_tracks)}/{len(self.queue.tracks)}"
             out.append(term.move_xy(0, row) + term.bold_yellow(input_text[: w - 1]) + term.clear_eol)
             row += 1
 
-        # 5. Queue (ranked by fuzzy score when query active)
+        # 5. Queue (ranked by fuzzy score when query active), with a one-line footer
         filtered = self.queue.filtered_tracks
-        # How many footer rows do we need? Compute first, then shrink list_height.
-        # Build footer lines that fit within terminal width
-        footer_lines: List[str] = []
-        current_line = ""
-        footer_hints = list(self.FOOTER_HINTS)
-        if self._vim_mode:
-            footer_hints = [
-                hint.replace("↑/↓ browse", "j/k browse").replace("←/→ seek", "h/l seek")
-                for hint in footer_hints
-            ]
-        footer_hints.insert(1, "V key mode")
-        for hint in footer_hints:
-            decorated = f"[{hint.split(' ', 1)[0]}]" + (f" {hint.split(' ', 1)[1]}" if " " in hint else "")
-            candidate = (current_line + "  " + decorated) if current_line else (" " + decorated)
-            if current_line and len(candidate) > w - 1:
-                footer_lines.append(current_line)
-                current_line = " " + decorated
-            else:
-                current_line = candidate
-        if current_line:
-            footer_lines.append(current_line)
-        num_footer_rows = len(footer_lines)
-
-        list_height = max(1, h - row - 1 - num_footer_rows)
+        list_height = max(1, h - row - 1)
 
         self._list_height = list_height
         self._move_list_selection(0)
 
-        list_header = self._queue_heading(len(filtered))
-        out.append(
-            term.move_xy(0, row)
-            + term.magenta(list_header + "─" * max(0, w - len(list_header) - 1))
-            + term.clear_eol
-        )
-        row += 1
-
         # Store for mouse hit-testing
         self._list_top_row = row
-        self._list_height = list_height
 
         for i in range(list_height):
             item_idx = self._scroll_offset + i
@@ -1062,16 +1011,16 @@ class BlessedMusicPlayer:
             out.append(term.move_xy(0, current_screen_row) + formatted + term.clear_eol)
 
         # Clear remaining unused rows below track list (above footer)
-        footer_start_row = h - num_footer_rows
-        for r_clear in range(row + list_height, footer_start_row):
+        footer_row = h - 1
+        for r_clear in range(row + list_height, footer_row):
             out.append(term.move_xy(0, r_clear) + term.clear_eol)
 
-        # 6. Compact command bar
-        for fi, fline in enumerate(footer_lines):
-            out.append(
-                term.move_xy(0, footer_start_row + fi)
-                + term.cyan(fline[: w - 1])
-                + term.clear_eol
-            )
+        footer = ""
+        for hint in self.FOOTER_HINTS:
+            candidate = f"{footer}  ·  {hint}" if footer else f" {hint}"
+            if len(candidate) > w - 1:
+                break
+            footer = candidate
+        out.append(term.move_xy(0, footer_row) + term.dim(footer) + term.clear_eol)
 
         print("".join(out), end="", flush=True)

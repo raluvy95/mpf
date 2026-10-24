@@ -428,5 +428,64 @@ class TestPlaybackStatePersistence(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(finished, [True])
 
 
+class TestIdleAndBufferingState(unittest.IsolatedAsyncioTestCase):
+    async def _poll_once(self, **mpv_props):
+        with patch("mpf_core.player.MPV"):
+            player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        self.addCleanup(player.previewer.close)
+        player.queue = TrackQueue([Track("a", "Song A")])
+        player.mpv = MagicMock(time_pos=0.0, duration=0.0, paused_for_cache=False, **mpv_props)
+        task = asyncio.create_task(player._mpv_poll_loop())
+        await asyncio.sleep(0.05)
+        player._running = False
+        with patch("mpf_core.player.save_playback_state"):
+            await task
+        return player
+
+    async def test_nothing_loaded_is_idle_not_buffering(self):
+        player = await self._poll_once(core_idle=True, idle_active=True)
+
+        self.assertTrue(player._mpv_idle)
+        self.assertFalse(player._is_buffering)
+
+    async def test_loading_file_with_idle_core_is_buffering(self):
+        player = await self._poll_once(core_idle=True, idle_active=False)
+
+        self.assertFalse(player._mpv_idle)
+        self.assertTrue(player._is_buffering)
+
+    async def test_visualizer_stays_paused_while_nothing_is_loaded(self):
+        with patch("mpf_core.player.MPV"):
+            player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        self.addCleanup(player.previewer.close)
+        player.queue = TrackQueue([Track("a", "Song A")])
+        player._show_visualizer = True
+        player.spectrum = MagicMock(enabled=False)
+        player.mpv = MagicMock(
+            time_pos=0.0, duration=0.0, paused_for_cache=False, core_idle=True, idle_active=True
+        )
+        task = asyncio.create_task(player._mpv_poll_loop())
+        await asyncio.sleep(0.05)
+        player._running = False
+        with patch("mpf_core.player.save_playback_state"):
+            await task
+
+        player.spectrum.resume.assert_not_called()
+
+    def test_playing_a_track_clears_idle_state(self):
+        with patch("mpf_core.player.MPV"):
+            player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        self.addCleanup(player.previewer.close)
+        player.queue = TrackQueue([Track("a", "Song A")])
+        player.mpv = MagicMock()
+        player.previewer.request = MagicMock()
+        self.assertTrue(player._mpv_idle)
+
+        player._play_index(0)
+
+        self.assertFalse(player._mpv_idle)
+        self.assertTrue(player._is_buffering)
+
+
 if __name__ == "__main__":
     unittest.main()

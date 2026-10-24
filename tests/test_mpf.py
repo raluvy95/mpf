@@ -721,9 +721,6 @@ class TestPlayerQualityOfLife(unittest.TestCase):
         player._volume = 42
 
         self.assertEqual(player._dashboard_summary(), " 42%  ·  󰑖  ·  󰎆 2")
-        self.assertEqual(player._queue_heading(2), "  2 ")
-        player._input_buffer = "one"
-        self.assertEqual(player._queue_heading(1), "  1/2 ")
 
         player._is_muted = True
         self.assertEqual(player._dashboard_summary(), "󰝟 42%  ·  󰑖  ·  󰎆 2")
