@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.1.0](https://github.com/raluvy95/mpf/compare/v1.0.3...v1.1.0) (2026-10-24)
+
+
+### Features
+
+* add progress bar seeking and freeze the visualizer on pause ([9420eb1](https://github.com/raluvy95/mpf/commit/9420eb10e3bc28926f97a510c0076d9a2bd3a521))
+* simplify the dashboard layout and fix idle buffering state ([6ec79db](https://github.com/raluvy95/mpf/commit/6ec79db7c04b29e93e1ef25b42d4f843e04c7d1f))
+
+
+### Bug Fixes
+
+* keep search separate from the main playlist ([d42e0b1](https://github.com/raluvy95/mpf/commit/d42e0b17b030976c02bf7e28ba1fe3244a3bd5e4))
+* preserve invalid config, unblock UI I/O, and harden release pipeline ([da939da](https://github.com/raluvy95/mpf/commit/da939da71f645999540669ed80e8e071394f0dfe))
+
+
+### Performance Improvements
+
+* cut playback CPU by about 60% and speed up startup ([d748e59](https://github.com/raluvy95/mpf/commit/d748e594f303b8779823e0a045306dd117c35ab9))
+
+
+### Documentation
+
+* base next version on the latest existing tag ([4002a10](https://github.com/raluvy95/mpf/commit/4002a10adaece671c09bc055c71bc583be9431c4))
+
 ## [1.0.3](https://github.com/raluvy95/mpf/compare/v1.0.2...v1.0.3) (2026-09-23)
 
 
