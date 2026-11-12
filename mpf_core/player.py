@@ -8,8 +8,9 @@ import os
 import subprocess
 import sys
 import time
+from collections import deque
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Deque, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 from blessed import Terminal
@@ -28,6 +29,7 @@ from mpf_core.config import (
     load_default_playlist,
     load_vim_mode,
     load_visualizer_preferences,
+    load_ytdl_fallback_clients,
     save_default_playlist,
     save_vim_mode,
     save_visualizer_preferences,
@@ -137,6 +139,13 @@ class BlessedMusicPlayer:
         self._last_render_signature: Optional[Tuple[Any, ...]] = None
         self._render_requested = asyncio.Event()
         self._mpv_poll_error_reported = False
+        # yt-dlp chooses the YouTube client. When mpv fails a track it is retried first with yt-dlp's own
+        # choice again (None, a fresh URL), then with each fallback client in order, then skipped.
+        self._ytdl_fallback_clients = load_ytdl_fallback_clients(config_file)
+        self._ytdl_plain_retries = 1
+        self._fallbacks_left: List[Optional[str]] = []
+        self._ytdl_client: Optional[str] = None  # client forced for the current attempt, if any
+        self._mpv_errors: Deque[str] = deque(maxlen=6)  # mpv's own error lines for the current track
         # Track list layout — updated each render so mouse clicks map to rows
         self._list_top_row = 0
         self._list_height = 0
@@ -166,6 +175,8 @@ class BlessedMusicPlayer:
                     demuxer_max_bytes="25M",
                     demuxer_readahead_secs="30",
                     stop_screensaver="yes",
+                    log_handler=self._on_mpv_log,
+                    loglevel="error",
                 )
             self.mpv.bind_event("end-file", self._on_mpv_end_file)
             self.mpv.bind_event("file-loaded", self._on_mpv_file_loaded)
@@ -359,6 +370,38 @@ class BlessedMusicPlayer:
         finally:
             self._is_loading_playlist = False
 
+    def _on_mpv_log(self, level: str, prefix: str, text: str) -> None:
+        """Keep mpv's real error lines (e.g. "HTTP error 403 Forbidden") for the skip message and log."""
+        self._mpv_errors.append(f"{prefix}: {text}")
+
+    def _set_ytdl_client(self, client: Optional[str]) -> None:
+        """Force a YouTube client for the next load, or None to let yt-dlp choose."""
+        if client == self._ytdl_client or not self.mpv:
+            return
+        self.mpv.ytdl_raw_options = f"extractor-args=youtube:player_client={client}" if client else ""
+        self._ytdl_client = client
+
+    def _retry_with_fallback_client(self, track: Any) -> bool:
+        """Reload the failed track with the next fallback client. False once none are left."""
+        if not self.mpv or not self._fallbacks_left:
+            return False
+        client = self._fallbacks_left.pop(0)
+        label = f"the {client} client" if client else "yt-dlp's default client"
+        logger.warning("Retrying %s with %s after: %s", track.id, label, self._mpv_errors_text())
+        self._mpv_errors.clear()  # the next attempt reports its own errors
+        try:
+            self._set_ytdl_client(client)
+            self.mpv.play(track.url)
+        except Exception:
+            logger.exception("Unable to retry track %s with client %s", track.id, client)
+            return False
+        self._status_msg = f"Retrying {track.title} with {label}..."
+        self._is_buffering = True
+        return True
+
+    def _mpv_errors_text(self) -> str:
+        return " | ".join(self._mpv_errors) or "no error from mpv"
+
     def _play_index(self, index: int, start_pos: float = 0.0) -> None:
         if not self.queue.tracks or not (0 <= index < len(self.queue.tracks)):
             return
@@ -372,6 +415,9 @@ class BlessedMusicPlayer:
         if self.mpv:
             try:
                 self._pending_seek = (track.id, start_pos) if start_pos > 1.0 else None
+                self._fallbacks_left = [None] * self._ytdl_plain_retries + list(self._ytdl_fallback_clients)
+                self._mpv_errors.clear()
+                self._set_ytdl_client(None)
                 self.mpv.play(track.url)
                 self._set_power_inhibit(True)
             except Exception as err:
@@ -579,10 +625,13 @@ class BlessedMusicPlayer:
             return
         current = self.queue.current_track
         if reason == "error" and current:
+            if self._retry_with_fallback_client(current):
+                return
             self._failed_track_ids.add(current.id)
             error = event.get("file_error") or event.get("error") or "media unavailable"
-            self._status_msg = f"Skipped {current.title}: {error}"
-            logger.warning("Playback failed for %s: %s", current.id, error)
+            detail = self._mpv_errors[-1] if self._mpv_errors else ""
+            self._status_msg = f"Skipped {current.title}: {error}" + (f" ({detail})" if detail else "")
+            logger.warning("Playback failed for %s: %s [%s]", current.id, error, self._mpv_errors_text())
 
         nxt = self.queue.get_next_index(natural_end=reason == "eof")
         if reason == "error":

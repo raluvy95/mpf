@@ -42,6 +42,10 @@
 - [x] Replaced the analyzer with a numpy port of cava 1.0.0's cavacore (default settings, 32 mono bars,
   50 Hz-8 kHz, noise reduction 0.77, autosens). Checked against the real cava binary with synthetic audio:
   steady-state tones light the same bar at the same height; attack, decay and autosens track within a few frames.
+- [x] Stopped skipping tracks on transient YouTube failures and removed the yt-dlp version pin.
+  - A failed track is retried with yt-dlp's default again, then with the configurable
+    `ytdl_fallback_clients`, before it is skipped; mpv's real error text is shown and logged.
+  - Measured: HTTP 403 from YouTube's media server was intermittent; a fresh URL recovered it.
 
 ## Notes
 

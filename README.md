@@ -85,9 +85,17 @@ Configuration defaults to `$XDG_CONFIG_HOME/mpf/config.json` or
   "default_playlist": "https://www.youtube.com/playlist?list=PLAYLIST_ID",
   "visualizer_style": "waterfall",
   "show_visualizer": true,
-  "vim_mode": true
+  "vim_mode": true,
+  "ytdl_fallback_clients": ["tv_simply", "mweb"]
 }
 ```
+
+`ytdl_fallback_clients` is optional. yt-dlp normally chooses how to talk to
+YouTube. If mpv fails a track (YouTube's media server sometimes answers HTTP
+403), MPF retries it once with yt-dlp's own choice again, then with each client
+listed here (yt-dlp `player_client` names), and skips it only if all fail. Which
+clients work changes over time, so edit this list instead of waiting for a
+release; `[]` keeps only the first retry.
 
 Loading a URL saves it as the default playlist. The URL argument takes
 precedence. Cache files, thumbnails, playback state, and logs use
@@ -126,7 +134,10 @@ exclusive.
 
 - **MPV startup failed** — install `mpv` and check that it is on `PATH`.
 - **Unable to retrieve URL** — make sure the URL is public, then update
-  `yt-dlp`.
+  `yt-dlp` (`pip install -U yt-dlp`; MPF does not pin it, and mpv uses the
+  `yt-dlp` on your `PATH`, so update that one too).
+- **Tracks get skipped** — the reason is in `~/.cache/mpf/mpf.log` and in the
+  status line, e.g. `HTTP error 403 Forbidden`.
 - **No visualizer** — install PipeWire's `pw-record` or PulseAudio's `parec`.
 - **No thumbnail** — run under Kitty and check access to YouTube thumbnail
   hosts.

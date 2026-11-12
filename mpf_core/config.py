@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
 from typing import Any, Dict, Optional
 
@@ -14,6 +15,13 @@ from mpf_core.paths import CONFIG_FILE
 logger = logging.getLogger(__name__)
 VISUALIZER_STYLES = ("waterfall", "bars", "braille", "waveform")
 DEFAULT_VIM_MODE = True
+# yt-dlp picks the YouTube client itself. When mpv fails a track (YouTube's media server sometimes
+# answers HTTP 403, or yt-dlp errors out), the track is first retried once with yt-dlp's own choice
+# again (a fresh URL is usually enough), then with these clients in order, then skipped. Edit the
+# list with the "ytdl_fallback_clients" key in config.json; an empty list leaves only the first retry.
+# Which clients work changes as YouTube changes; names are yt-dlp "player_client" values.
+DEFAULT_YTDL_FALLBACK_CLIENTS = ("tv_simply", "mweb")
+_CLIENT_NAME = re.compile(r"[A-Za-z0-9_]+")  # ends up inside an mpv option string: no commas or '='
 
 
 def _parse_config(config_file: str) -> Any:
@@ -83,6 +91,19 @@ def load_visualizer_preferences(config_file: str = CONFIG_FILE) -> tuple[str, bo
         style if style in VISUALIZER_STYLES else "waterfall",
         visible if isinstance(visible, bool) else True,
     )
+
+
+def load_ytdl_fallback_clients(config_file: str = CONFIG_FILE) -> tuple[str, ...]:
+    """Return the YouTube clients to retry a failed track with, in order."""
+    value = _load_config(config_file).get("ytdl_fallback_clients")
+    if value is None:
+        return DEFAULT_YTDL_FALLBACK_CLIENTS
+    if not isinstance(value, list) or not all(
+        isinstance(name, str) and _CLIENT_NAME.fullmatch(name) for name in value
+    ):
+        logger.warning("Ignoring invalid ytdl_fallback_clients in %s", config_file)
+        return DEFAULT_YTDL_FALLBACK_CLIENTS
+    return tuple(dict.fromkeys(value))
 
 
 def _save_config(config: Dict[str, Any], config_file: str) -> bool:

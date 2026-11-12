@@ -147,6 +147,8 @@ class TestPlayerFailureHandling(unittest.TestCase):
         self.player.queue = TrackQueue([Track("a", "A"), Track("b", "B"), Track("c", "C")])
         self.player.mpv = MagicMock()
         self.player.previewer.request = MagicMock()
+        self.player._ytdl_plain_retries = 0  # retries have their own tests below
+        self.player._ytdl_fallback_clients = ()
 
     def tearDown(self):
         self.player.previewer.close()
@@ -159,6 +161,50 @@ class TestPlayerFailureHandling(unittest.TestCase):
         self.player._handle_mpv_end_file({"reason": "error"})
         self.assertTrue(self.player._is_paused)
         self.assertEqual(self.player._failed_track_ids, {"a", "b", "c"})
+
+    def test_failed_track_is_retried_with_ytdlp_default_then_each_fallback_client_before_skipping(self):
+        player = self.player
+        player._ytdl_plain_retries = 1
+        player._ytdl_fallback_clients = ("tv_simply", "mweb")
+        player._play_index(0)
+        self.assertIsNone(player._ytdl_client)  # yt-dlp's own choice comes first
+        player.mpv.play.reset_mock()
+
+        player._on_mpv_log("error", "ffmpeg", "https: HTTP error 403 Forbidden")
+        player._handle_mpv_end_file({"reason": "error", "error": "no audio or video data played"})
+        self.assertEqual(player.queue.current_track.id, "a")  # same track, not skipped
+        self.assertIsNone(player._ytdl_client)  # first retry: yt-dlp's default again, fresh URL
+        player.mpv.play.assert_called_once_with("https://youtu.be/a")
+        self.assertEqual(len(player._mpv_errors), 0)  # each attempt reports its own errors
+
+        player._handle_mpv_end_file({"reason": "error"})
+        self.assertEqual((player.queue.current_track.id, player._ytdl_client), ("a", "tv_simply"))
+        self.assertEqual(player.mpv.ytdl_raw_options, "extractor-args=youtube:player_client=tv_simply")
+        player._handle_mpv_end_file({"reason": "error"})
+        self.assertEqual((player.queue.current_track.id, player._ytdl_client), ("a", "mweb"))
+        self.assertEqual(player._failed_track_ids, set())
+
+        player._on_mpv_log("error", "ffmpeg", "https: HTTP error 403 Forbidden")
+        player._handle_mpv_end_file({"reason": "error", "error": "no audio or video data played"})
+        self.assertEqual(player.queue.current_track.id, "b")  # everything tried: skipped
+        self.assertEqual(player._failed_track_ids, {"a"})
+        self.assertIn("HTTP error 403 Forbidden", player._status_msg)
+        self.assertIsNone(player._ytdl_client)  # the next track starts on yt-dlp's default again
+        self.assertEqual(player.mpv.ytdl_raw_options, "")
+
+    def test_successful_play_never_triggers_a_retry(self):
+        self.player._ytdl_plain_retries = 1
+        self.player._ytdl_fallback_clients = ("tv_simply",)
+        self.player._play_index(0)
+        self.player._handle_mpv_end_file({"reason": "eof"})
+        self.assertIsNone(self.player._ytdl_client)
+        self.assertEqual(self.player.queue.current_track.id, "b")
+
+    def test_retry_keeps_the_resume_position(self):
+        self.player._ytdl_plain_retries = 1
+        self.player._play_index(0, start_pos=42.0)
+        self.player._handle_mpv_end_file({"reason": "error"})
+        self.assertEqual(self.player._pending_seek, ("a", 42.0))
 
     def test_repeat_off_stops_at_natural_playlist_end(self):
         self.player.queue.current_idx = 2

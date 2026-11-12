@@ -810,3 +810,34 @@ class TestPlayerQualityOfLife(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestYtdlFallbackConfig(unittest.TestCase):
+    def _load(self, content):
+        import tempfile
+
+        from mpf_core.config import load_ytdl_fallback_clients
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "config.json")
+            if content is not None:
+                with open(path, "w", encoding="utf-8") as file:
+                    file.write(content)
+            return load_ytdl_fallback_clients(path)
+
+    def test_defaults_when_unset(self):
+        from mpf_core.config import DEFAULT_YTDL_FALLBACK_CLIENTS
+
+        self.assertEqual(self._load(None), DEFAULT_YTDL_FALLBACK_CLIENTS)
+        self.assertEqual(self._load("{}"), DEFAULT_YTDL_FALLBACK_CLIENTS)
+
+    def test_user_list_replaces_defaults_and_empty_disables_retries(self):
+        self.assertEqual(self._load('{"ytdl_fallback_clients": ["mweb", "tv", "mweb"]}'), ("mweb", "tv"))
+        self.assertEqual(self._load('{"ytdl_fallback_clients": []}'), ())
+
+    def test_invalid_values_fall_back_to_defaults(self):
+        from mpf_core.config import DEFAULT_YTDL_FALLBACK_CLIENTS
+
+        for bad in ('"tv"', '["tv,ios"]', '["a=b"]', "[1]", '[""]'):
+            with self.subTest(bad=bad):
+                self.assertEqual(self._load('{"ytdl_fallback_clients": %s}' % bad), DEFAULT_YTDL_FALLBACK_CLIENTS)
