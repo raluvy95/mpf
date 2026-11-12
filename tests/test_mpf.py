@@ -203,12 +203,36 @@ class TestTrackQueue(unittest.TestCase):
         self.queue.current_idx = 0
         self.assertEqual(self.queue.get_prev_index(), 2)
 
-    def test_shuffle(self):
+    def test_shuffle_is_a_reversible_mode(self):
         curr = self.tracks[1]
         self.queue.current_idx = 1
-        self.queue.shuffle()
-        self.assertEqual(len(self.queue.tracks), 3)
+        original = list(self.queue.tracks)
+        self.queue.set_shuffle(True)
+        self.assertTrue(self.queue.shuffle_enabled)
+        self.assertEqual(sorted(t.id for t in self.queue.tracks), sorted(t.id for t in original))
         self.assertEqual(self.queue.current_track, curr)
+        self.queue.set_shuffle(False)
+        self.assertEqual(self.queue.tracks, original)
+        self.assertEqual(self.queue.current_track, curr)
+
+    def test_shuffle_survives_resync_but_not_a_new_playlist(self):
+        many = [Track(f"id{i}", f"T{i}", 10) for i in range(30)]
+        self.queue.set_tracks(many)
+        self.queue.set_shuffle(True)
+        shuffled = [t.id for t in self.queue.tracks]
+        added = Track("new", "New", 10)
+        self.queue.set_tracks(many[:-1] + [added], reset_index=False)  # sync: one removed, one added
+        self.assertTrue(self.queue.shuffle_enabled)
+        kept = [t.id for t in self.queue.tracks if t.id != "new"]
+        self.assertEqual(kept, [i for i in shuffled if i != "id29"])
+        self.assertIn("new", [t.id for t in self.queue.tracks])
+        self.queue.set_shuffle(False)
+        self.assertEqual([t.id for t in self.queue.tracks], [t.id for t in many[:-1] + [added]])
+
+        self.queue.set_shuffle(True)
+        self.queue.set_tracks(many)  # a different playlist resets shuffle
+        self.assertFalse(self.queue.shuffle_enabled)
+        self.assertEqual(self.queue.tracks, many)
 
     def test_fuzzy_search_filter(self):
         self.queue.set_filter("beta")
@@ -231,7 +255,7 @@ class TestTrackQueue(unittest.TestCase):
         revisions.append(self.queue.revision)
         self.queue.set_filter("a")  # unchanged query
         self.assertEqual(self.queue.revision, revisions[-1])
-        self.queue.shuffle()
+        self.queue.set_shuffle(True)
         revisions.append(self.queue.revision)
         self.queue.set_tracks(list(self.queue.tracks))
         revisions.append(self.queue.revision)
@@ -765,10 +789,12 @@ class TestPlayerQualityOfLife(unittest.TestCase):
         player.queue.set_tracks([Track("1", "One"), Track("2", "Two")])
         player._volume = 42
 
-        self.assertEqual(player._dashboard_summary(), " 42%  ·  󰑖  ·  󰒟  ·  󰎆 2")
+        self.assertEqual(player._dashboard_summary(), " 42%  ·  󰑖  ·  󰒞  ·  󰎆 2")
 
         player._is_muted = True
-        self.assertEqual(player._dashboard_summary(), "󰝟 42%  ·  󰑖  ·  󰒟  ·  󰎆 2")
+        self.assertEqual(player._dashboard_summary(), "󰝟 42%  ·  󰑖  ·  \U000f049e  ·  󰎆 2")
+        player.queue.set_shuffle(True)
+        self.assertIn("\U000f049f", player._dashboard_summary())
 
     def test_help_overlay_opens_and_closes_with_question_mark_or_escape(self):
         from mpf_core.player import BlessedMusicPlayer

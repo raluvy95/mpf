@@ -175,6 +175,10 @@ class TrackQueue:
         self.tracks: List[Track] = tracks or []
         self.current_idx: int = 0
         self.repeat_mode: RepeatMode = RepeatMode.ALL
+        # Shuffle is a mode: ``tracks`` holds the shuffled order while it is on, and
+        # ``_ordered`` remembers the real playlist order so turning it off restores it.
+        self.shuffle_enabled: bool = False
+        self._ordered: List[Track] = []
         self._search_filter: str = ""
         self._filtered_cache: Optional[List[Tuple[int, Track]]] = None
         # Bumped on every change to the visible queue so the UI can skip no-op redraws.
@@ -183,6 +187,17 @@ class TrackQueue:
     def set_tracks(self, tracks: List[Track], reset_index: bool = True) -> None:
         current_id = self.current_track.id if self.current_track else None
         old_index = self.current_idx
+        if self.shuffle_enabled and reset_index:
+            # A different playlist: indexes computed by callers refer to its real order.
+            self.shuffle_enabled = False
+        if self.shuffle_enabled:
+            # Same playlist re-synced: keep the shuffled order for tracks that remain.
+            self._ordered = list(tracks)
+            incoming = {track.id: track for track in tracks}
+            kept = [incoming.pop(track.id) for track in self.tracks if track.id in incoming]
+            fresh = list(incoming.values())
+            random.shuffle(fresh)
+            tracks = kept + fresh
         self.tracks = list(tracks)
         self._filtered_cache = None
         self.revision += 1
@@ -240,14 +255,23 @@ class TrackQueue:
             return self.current_idx - 1
         return len(self.tracks) - 1
 
-    def shuffle(self) -> None:
-        if not self.tracks:
+    def set_shuffle(self, enabled: bool) -> None:
+        """Turn shuffle on or off without losing the playlist order or the current track."""
+        if enabled == self.shuffle_enabled:
             return
-        curr = self.current_track
-        random.shuffle(self.tracks)
+        current = self.current_track
+        if enabled:
+            self._ordered = list(self.tracks)
+            random.shuffle(self.tracks)
+        else:
+            position = {track.id: index for index, track in enumerate(self._ordered)}
+            self.tracks.sort(key=lambda track: position.get(track.id, len(position)))
+            self._ordered = []
+        self.shuffle_enabled = enabled
         self._filtered_cache = None
         self.revision += 1
-        if curr and curr in self.tracks:
-            self.current_idx = self.tracks.index(curr)
-        else:
-            self.current_idx = 0
+        self.current_idx = self.tracks.index(current) if current in self.tracks else 0
+
+    def toggle_shuffle(self) -> bool:
+        self.set_shuffle(not self.shuffle_enabled)
+        return self.shuffle_enabled

@@ -610,7 +610,7 @@ class TestMouseControls(unittest.TestCase):
         self.player._handle_mouse(_mouse("MOUSE_LEFT", 81, 0))
         self.assertEqual(self.player.queue.repeat_mode, before.next_mode())
 
-        with patch.object(self.player.queue, "shuffle") as shuffle:
+        with patch.object(self.player.queue, "set_shuffle") as shuffle:
             self.player._handle_mouse(_mouse("MOUSE_LEFT", 83, 0))  # between icons
             shuffle.assert_not_called()
             self.player._handle_mouse(_mouse("MOUSE_LEFT", 86, 0))
@@ -686,7 +686,7 @@ class TestRenderProtection(unittest.TestCase):
         player._show_visualizer = not player._show_visualizer
         self.assertNotEqual(player._render_signature(), base)
         base = player._render_signature()
-        player.queue.shuffle()
+        player.queue.set_shuffle(True)
         self.assertNotEqual(player._render_signature(), base)
 
     def test_visualizer_toggle_requests_a_redraw(self):

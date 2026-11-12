@@ -132,9 +132,13 @@ class _Player(ServiceInterface):
     def Rate(self) -> "d":
         return 1.0
 
-    @dbus_property(access=PropertyAccess.READ)
+    @dbus_property()
     def Shuffle(self) -> "b":
-        return False
+        return self._p.queue.shuffle_enabled
+
+    @Shuffle.setter
+    def Shuffle(self, value: "b") -> None:
+        self._p.set_shuffle(value)
 
     @dbus_property(access=PropertyAccess.READ)
     def Metadata(self) -> "a{sv}":
@@ -243,6 +247,7 @@ class MprisService:
             current = {
                 "PlaybackStatus": p.mpris_playback_status(),
                 "LoopStatus": p.mpris_loop_status(),
+                "Shuffle": p.queue.shuffle_enabled,
                 "Volume": p._volume / 100,
                 "Metadata": (p.queue.current_track.id if p.queue.current_track else None, round(p._duration), bool(p.mpris_art_path())),
                 "CanGoNext": bool(p.queue.tracks),

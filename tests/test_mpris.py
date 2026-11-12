@@ -40,3 +40,11 @@ class TestMpris(unittest.TestCase):
         self.assertEqual(player.mpris_playback_status(), "Playing")
         player._is_paused = True
         self.assertEqual(player.mpris_playback_status(), "Paused")
+
+    def test_shuffle_property_drives_the_queue(self):
+        player = BlessedMusicPlayer(auto_play=False)
+        player.queue.set_tracks([Track(str(i), f"S{i}", 10) for i in range(5)])
+        player.set_shuffle(True)
+        self.assertTrue(player.queue.shuffle_enabled)
+        player.set_shuffle(False)
+        self.assertEqual([t.id for t in player.queue.tracks], [str(i) for i in range(5)])

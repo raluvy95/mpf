@@ -85,7 +85,7 @@ class BlessedMusicPlayer:
     IDLE_RENDER_INTERVAL = 0.1
     MIN_RENDER_INTERVAL = 1 / 30  # coalesces bursts of input into one redraw
     INPUT_POLL_INTERVAL = 0.25  # inkey returns at once on a keypress; this only bounds shutdown latency
-    SHUFFLE_ICON = "\U000f049f"
+    SHUFFLE_ICONS = {True: "\U000f049f", False: "\U000f049e"}
     SUMMARY_SEPARATOR = "  ·  "
     FOOTER_HINTS = ["? help", "space pause", "/ search", "o open", "q quit"]
 
@@ -482,8 +482,9 @@ class BlessedMusicPlayer:
     def mpris_metadata(self) -> Dict[str, Any]:
         return build_metadata(self.queue.current_track, self._duration, self.mpris_art_path())
 
-    def _shuffle_queue(self) -> None:
-        self.queue.shuffle()
+    def set_shuffle(self, enabled: bool) -> None:
+        self.queue.set_shuffle(enabled)
+        self._render_requested.set()
 
     def _cycle_repeat(self) -> None:
         self.queue.repeat_mode = self.queue.repeat_mode.next_mode()
@@ -491,7 +492,7 @@ class BlessedMusicPlayer:
     def _activate_summary(self, action: str) -> None:
         """Run the control behind a clicked dashboard summary icon."""
         if action == "shuffle":
-            self._shuffle_queue()
+            self.set_shuffle(not self.queue.shuffle_enabled)
         elif action == "repeat":
             self._cycle_repeat()
 
@@ -731,7 +732,7 @@ class BlessedMusicPlayer:
         elif key in ("p", "P"):
             self.previous_track()
         elif key in ("s", "S"):
-            self._shuffle_queue()
+            self.set_shuffle(not self.queue.shuffle_enabled)
         elif key in ("r", "R"):
             self._cycle_repeat()
         elif (self._vim_mode and key == "h") or (
@@ -992,6 +993,7 @@ class BlessedMusicPlayer:
             self._show_help,
             self._volume,
             self.queue.repeat_mode,
+            self.queue.shuffle_enabled,
             self._status_msg,
             int(self._time_pos),
             int(self._duration),
@@ -1009,7 +1011,7 @@ class BlessedMusicPlayer:
             " Playback",
             "   Space       Play or pause",
             "   n / p       Next or previous track",
-            "   s           Shuffle queue",
+            "   s           Toggle shuffle",
             "   r           Cycle repeat mode",
             "   m           Mute",
             "   + / -       Change volume",
@@ -1050,7 +1052,7 @@ class BlessedMusicPlayer:
         return [
             (f"{volume_icon} {self._volume}%", ""),
             (self.queue.repeat_mode.icon, "repeat"),
-            (self.SHUFFLE_ICON, "shuffle"),
+            (self.SHUFFLE_ICONS[self.queue.shuffle_enabled], "shuffle"),
             (f"\U000f0386 {len(self.queue.tracks)}", ""),
         ]
 
