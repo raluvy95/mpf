@@ -13,7 +13,8 @@ python3.14 -m venv .venv
 
 `constraints.txt` pins the exact versions CI tests with. When intentionally upgrading
 dependencies, install `requirements-dev.txt` into a clean virtual environment, run the
-checks below, and replace its contents with that environment's `pip freeze` output.
+checks below, and replace its contents with that environment's `pip freeze` output, minus the
+`yt-dlp` line: it is deliberately not pinned, because YouTube breaks older releases.
 
 Before submitting a change, run:
 
