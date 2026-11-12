@@ -35,11 +35,11 @@
 - [x] Fixed the render-signature test, which depended on the user's saved visualizer style.
 - [x] Added `mpf_core.mpris` to the AppImage build and smoke-tested the frozen binary:
   `dbus-fast` bundles correctly and the binary registers on the session bus.
+- [x] Made shuffle a reversible toggle instead of a destructive reorder; MPRIS exposes it as `Shuffle`.
+  - Commit: `fc702fe feat: make shuffle a reversible toggle`
 
 ## Notes
 
 - The AppImage bundles MPF and Python dependencies but continues to require `mpv` as a Linux system dependency.
 - Project documentation reflects the current TUI, controls, packaging, and
   development workflow.
-- MPRIS reports `Shuffle` as off and read-only. `s` reorders the queue in place and keeps no
-  original order, so exposing a real shuffle mode would mean making it a toggle first.
