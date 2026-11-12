@@ -2,6 +2,7 @@
 # Regenerate in a clean venv: pip install -r requirements-dev.txt && pip freeze
 altgraph==0.17.5
 blessed==1.52.0
+dbus-fast==3.1.2
 iniconfig==2.3.1
 jinxed==2.1.0
 librt==0.16.0

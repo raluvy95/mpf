@@ -39,6 +39,7 @@ from mpf_core.fetcher import (
     validate_media_url,
 )
 from mpf_core.models import RepeatMode, TrackQueue, format_time
+from mpf_core.mpris import MprisService, build_metadata
 from mpf_core.paths import CONFIG_FILE
 from mpf_core.previewer import KittyPreviewer
 from mpf_core.visualizer import PipeWireSpectrumAnalyzer
@@ -105,6 +106,7 @@ class BlessedMusicPlayer:
         self.mpv: Optional[MPV] = None
         self.spectrum = PipeWireSpectrumAnalyzer(num_bands=32, target_node="mpv")
         self.previewer = KittyPreviewer()
+        self.mpris = MprisService(self)
 
         self._running = True
         self._is_paused = False
@@ -172,6 +174,7 @@ class BlessedMusicPlayer:
             logger.exception("MPV startup failed")
 
         self.spectrum.start()
+        await self.mpris.start()
         if self.playlist_url:
             self._playlist_task = asyncio.create_task(self.load_playlist(self.playlist_url))
         else:
@@ -205,6 +208,7 @@ class BlessedMusicPlayer:
                 self.previewer.clear()
                 self.previewer.close()
                 self.spectrum.stop()
+                self.mpris.stop()
                 self._set_power_inhibit(False)
                 if self.mpv:
                     try:
@@ -398,6 +402,78 @@ class BlessedMusicPlayer:
         else:
             self.spectrum.pause()
 
+    # ── Playback controls shared by the keyboard and MPRIS ──────────────────
+
+    def set_paused(self, paused: bool) -> None:
+        if not self.mpv:
+            return
+        try:
+            self.mpv.pause = paused
+            self._is_paused = paused
+            self._set_power_inhibit(not paused)
+        except Exception as err:
+            self._status_msg = f"Pause failed: {err}"
+            logger.warning("MPV pause failed: %s", err)
+        self._render_requested.set()
+
+    def next_track(self) -> None:
+        nxt = self.queue.get_next_index(natural_end=False)
+        if nxt is not None:
+            self._play_index(nxt)
+            self._render_requested.set()
+
+    def previous_track(self) -> None:
+        prev = self.queue.get_prev_index()
+        if prev is not None:
+            self._play_index(prev)
+            self._render_requested.set()
+
+    def seek_relative(self, seconds: float) -> None:
+        self._seek("seek", seconds, "relative")
+
+    def seek_absolute(self, seconds: float) -> None:
+        self._seek("seek", max(0.0, seconds), "absolute")
+
+    def _seek(self, *command: Any) -> None:
+        if not self.mpv:
+            return
+        try:
+            self.mpv.command(*command)
+        except Exception as err:
+            self._status_msg = f"Seek failed: {err}"
+            logger.warning("MPV seek failed: %s", err)
+
+    def set_volume(self, volume: int) -> None:
+        self._volume = max(0, min(100, volume))
+        if self.mpv:
+            try:
+                self.mpv.volume = self._volume
+            except Exception as err:
+                self._status_msg = f"Volume change failed: {err}"
+                logger.warning("MPV volume change failed: %s", err)
+        self._render_requested.set()
+
+    def set_loop_status(self, status: str) -> None:
+        mode = {"None": RepeatMode.OFF, "Playlist": RepeatMode.ALL, "Track": RepeatMode.ONE}.get(status)
+        if mode:
+            self.queue.repeat_mode = mode
+            self._render_requested.set()
+
+    # ── MPRIS state ─────────────────────────────────────────────────────────
+
+    def mpris_playback_status(self) -> str:
+        if not self.queue.current_track or self._mpv_idle and not self._is_buffering:
+            return "Stopped"
+        return "Paused" if self._is_paused else "Playing"
+
+    def mpris_loop_status(self) -> str:
+        return {RepeatMode.OFF: "None", RepeatMode.ALL: "Playlist", RepeatMode.ONE: "Track"}[
+            self.queue.repeat_mode
+        ]
+
+    def mpris_metadata(self) -> Dict[str, Any]:
+        return build_metadata(self.queue.current_track, self._duration)
+
     def _shuffle_queue(self) -> None:
         self.queue.shuffle()
 
@@ -562,6 +638,7 @@ class BlessedMusicPlayer:
                         self._status_msg = f"MPV status error: {err}"
                         logger.warning("Unable to poll MPV status: %s", err)
                         self._mpv_poll_error_reported = True
+            self.mpris.sync()
             await asyncio.sleep(0.2)
 
     async def _input_loop(self) -> None:
@@ -640,22 +717,11 @@ class BlessedMusicPlayer:
         elif key == "?":
             self._show_help = True
         elif key == " ":
-            if self.mpv:
-                try:
-                    self._is_paused = not getattr(self.mpv, "pause", False)
-                    self.mpv.pause = self._is_paused
-                    self._set_power_inhibit(not self._is_paused)
-                except Exception as err:
-                    self._status_msg = f"Pause failed: {err}"
-                    logger.warning("MPV pause failed: %s", err)
+            self.set_paused(not self._is_paused)
         elif key in ("n", "N"):
-            nxt = self.queue.get_next_index(natural_end=False)
-            if nxt is not None:
-                self._play_index(nxt)
+            self.next_track()
         elif key in ("p", "P"):
-            prev = self.queue.get_prev_index()
-            if prev is not None:
-                self._play_index(prev)
+            self.previous_track()
         elif key in ("s", "S"):
             self._shuffle_queue()
         elif key in ("r", "R"):
@@ -663,51 +729,19 @@ class BlessedMusicPlayer:
         elif (self._vim_mode and key == "h") or (
             not self._vim_mode and key_name == "KEY_LEFT"
         ):
-            if self.mpv:
-                try:
-                    self.mpv.command("seek", -5, "relative")
-                except Exception as err:
-                    self._status_msg = f"Seek failed: {err}"
-                    logger.warning("MPV seek failed: %s", err)
+            self.seek_relative(-5)
         elif (self._vim_mode and key == "l") or (
             not self._vim_mode and key_name == "KEY_RIGHT"
         ):
-            if self.mpv:
-                try:
-                    self.mpv.command("seek", 5, "relative")
-                except Exception as err:
-                    self._status_msg = f"Seek failed: {err}"
-                    logger.warning("MPV seek failed: %s", err)
+            self.seek_relative(5)
         elif key == "[":
-            if self.mpv:
-                try:
-                    self.mpv.command("seek", -30, "relative")
-                except Exception as err:
-                    self._status_msg = f"Seek failed: {err}"
-                    logger.warning("MPV seek failed: %s", err)
+            self.seek_relative(-30)
         elif key == "]":
-            if self.mpv:
-                try:
-                    self.mpv.command("seek", 30, "relative")
-                except Exception as err:
-                    self._status_msg = f"Seek failed: {err}"
-                    logger.warning("MPV seek failed: %s", err)
+            self.seek_relative(30)
         elif key in ("+", "="):
-            self._volume = min(100, self._volume + 5)
-            if self.mpv:
-                try:
-                    self.mpv.volume = self._volume
-                except Exception as err:
-                    self._status_msg = f"Volume change failed: {err}"
-                    logger.warning("MPV volume change failed: %s", err)
+            self.set_volume(self._volume + 5)
         elif key in ("-", "_"):
-            self._volume = max(0, self._volume - 5)
-            if self.mpv:
-                try:
-                    self.mpv.volume = self._volume
-                except Exception as err:
-                    self._status_msg = f"Volume change failed: {err}"
-                    logger.warning("MPV volume change failed: %s", err)
+            self.set_volume(self._volume - 5)
         elif key in ("m", "M"):
             self._is_muted = not self._is_muted
             if self.mpv:

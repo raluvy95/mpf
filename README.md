@@ -11,6 +11,7 @@ visualizer in a Blessed TUI.
 ## ✨ Features
 
 - 🎶 Play public YouTube playlists and videos with `mpv`.
+- 🔒 MPRIS support: track info and play/pause/next/previous/seek/volume on the KDE lock screen, media keys, and `playerctl`.
 - 🔎 Fuzzy queue search, shuffle, repeat, seeking, and volume controls.
 - 💾 Cached playlists with background refresh and offline fallback.
 - 🌈 Four visualizer styles: waterfall, bars, braille, and waveform.
