@@ -7,6 +7,7 @@ This module imports nothing from the rest of the package so every layer can use 
 
 from __future__ import annotations
 
+import logging
 import re
 
 TITLE_LIMIT = 300
@@ -19,26 +20,32 @@ _WHITESPACE_CONTROLS = re.compile(r"[\t\n\r\x0b\x0c  ]+")
 _UNSAFE = re.compile("[\x00-\x1f\x7f-\x9f‪-‮⁦-⁩\ud800-\udfff]")
 
 
-_URL = re.compile(r"https?://([^\s/?#]+)([^\s?#]*)([?#]\S*)?", re.IGNORECASE)
+_URL = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*)://([^\s/?#]+)([^\s?#]*)([?#]\S*)?")
 # Hosts whose URLs are public identifiers worth keeping in messages (?v=VIDEO_ID, ?list=...).
 _PLAIN_URL_HOSTS = ("youtube.com", "youtu.be", "ytimg.com")
+_URL_TRAILING = ")]}>.,;:!'\""  # punctuation that ends a sentence, not a query
+
+
+def _is_plain_host(host: str) -> bool:
+    return any(host == plain or host.endswith("." + plain) for plain in _PLAIN_URL_HOSTS)
 
 
 def redact_urls(text: str) -> str:
-    """Drop the query/fragment of URLs, except YouTube page and thumbnail URLs.
+    """Drop the query/fragment of URLs of any scheme, except YouTube page and thumbnail URLs.
 
     Stream URLs from googlevideo.com carry the client's IP address and signed tokens that stay valid
-    for hours; they must not end up in log files or on screen.
+    for hours; they must not end up in log files or on screen. ``user:password@`` is dropped too.
     """
 
     def redact(match: re.Match[str]) -> str:
-        scheme = match.group(0).split("://", 1)[0]
-        hostport = match.group(1).split("@")[-1]  # never keep user:password@
-        host = hostport.lower().split(":")[0]
-        query = match.group(3) or ""
-        if query and not host.endswith(_PLAIN_URL_HOSTS):
+        scheme, authority, path = match.group(1), match.group(2), match.group(3)
+        query = match.group(4) or ""
+        hostport = authority.split("@")[-1]  # never keep user:password@
+        trailing = ""
+        if query and not _is_plain_host(hostport.lower().split(":")[0]):
+            trailing = query[len(query.rstrip(_URL_TRAILING)) :]
             query = "?..."
-        return f"{scheme}://{hostport}{match.group(2)}{query}"
+        return f"{scheme}://{hostport}{path}{query}{trailing}"
 
     return _URL.sub(redact, text)
 
@@ -86,3 +93,29 @@ def parse_track(track: object) -> tuple[str, str]:
     if len(parts) == 2 and parts[0].strip() and parts[1].strip():
         return clean_text(parts[0], NAME_LIMIT), clean_text(parts[1])
     return channel, title
+
+
+class RedactingFilter(logging.Filter):
+    """Log filter: redact URLs everywhere and keep untrusted text from forging log lines.
+
+    Covers the message and any traceback (exception text can carry stream URLs or attacker-chosen
+    newlines). Continuation lines are indented so a forged "timestamp LEVEL ..." line cannot start a
+    line of its own.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            record.msg = clean_text(redact_urls(record.getMessage()), 2000)
+            record.args = ()
+            if record.exc_info and not record.exc_text:
+                record.exc_text = self._safe_block(logging.Formatter().formatException(record.exc_info))
+            if record.stack_info:
+                record.stack_info = self._safe_block(record.stack_info)
+        except Exception:  # a broken record must never break logging itself
+            pass
+        return True
+
+    @staticmethod
+    def _safe_block(text: str) -> str:
+        lines = [_UNSAFE.sub("", line) for line in redact_urls(text).splitlines()]
+        return "\n".join(("" if index == 0 else "    ") + line for index, line in enumerate(lines))

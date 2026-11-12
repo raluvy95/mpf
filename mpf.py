@@ -9,6 +9,7 @@ import os
 from typing import List, Optional
 
 from mpf_core.config import load_default_playlist
+from mpf_core.metadata import RedactingFilter
 from mpf_core.paths import CACHE_DIR, CONFIG_FILE, LOG_FILE
 
 DEFAULT_PLAYLIST_URL = ""
@@ -77,6 +78,7 @@ def configure_logging(
     except OSError:
         logging.basicConfig(level=logging.CRITICAL)
         return
+    handler.addFilter(RedactingFilter())
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logging.basicConfig(level=logging.INFO, handlers=[handler])
 

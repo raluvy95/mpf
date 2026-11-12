@@ -1,10 +1,12 @@
 """Cleaning of untrusted track text."""
 
+import io
+import logging
 import unittest
 from unittest.mock import MagicMock, patch
 
 from mpf_core.fetcher import fetch_playlist_tracks
-from mpf_core.metadata import clean_text, parse_track, redact_urls, strip_noise
+from mpf_core.metadata import RedactingFilter, clean_text, parse_track, redact_urls, strip_noise
 from mpf_core.models import Track
 from mpf_core.player import BlessedMusicPlayer
 
@@ -53,6 +55,20 @@ class TestRedactUrls(unittest.TestCase):
         self.assertEqual(redact_urls("http://user:pw@evil.example/p?token=S#f"), "http://evil.example/p?...")
         self.assertEqual(redact_urls("no url, just words"), "no url, just words")
         self.assertEqual(redact_urls("https://a.example/x?q=1 and https://b.example/y"), "https://a.example/x?... and https://b.example/y")
+
+    def test_host_match_needs_a_dot_boundary(self):
+        for host in ("notyoutube.com", "evilytimg.com", "youtu.be.evil.example", "youtube.com.evil.example"):
+            with self.subTest(host=host):
+                self.assertEqual(redact_urls(f"https://{host}/x?ip=1.2.3.4"), f"https://{host}/x?...")
+        for host in ("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "i.ytimg.com"):
+            with self.subTest(host=host):
+                self.assertEqual(redact_urls(f"https://{host}/x?v=abc"), f"https://{host}/x?v=abc")
+
+    def test_every_scheme_is_covered_and_trailing_punctuation_survives(self):
+        self.assertEqual(redact_urls("rtmp://h.example/live?key=SECRET"), "rtmp://h.example/live?...")
+        self.assertEqual(redact_urls("ftp://u:p@h.example/f?x=1"), "ftp://h.example/f?...")
+        self.assertEqual(redact_urls("(https://a.googlevideo.com/v?ip=1.2.3.4)."), "(https://a.googlevideo.com/v?...).")
+        self.assertEqual(redact_urls("file:///etc/passwd"), "file:///etc/passwd")
 
     def test_mpv_log_lines_are_redacted_before_being_kept(self):
         player = BlessedMusicPlayer(auto_play=False)
@@ -142,3 +158,45 @@ class TestIngestionPoints(unittest.TestCase):
         player._ytdl_fallback_clients = ()
         player._handle_mpv_end_file({"reason": "error", "error": f"oops{OSC52}"})
         self.assertNotIn("\x1b", player._status_msg)
+
+
+class TestRedactingFilter(unittest.TestCase):
+    def _logger(self):
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.addFilter(RedactingFilter())
+        handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+        logger = logging.getLogger(f"redact-test-{id(stream)}")
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+        logger.addHandler(handler)
+        return logger, stream
+
+    def test_message_arguments_are_redacted(self):
+        logger, stream = self._logger()
+        logger.warning("failed %s", "https://rr1.googlevideo.com/v?ip=9.9.9.9&sig=Q")
+        self.assertNotIn("9.9.9.9", stream.getvalue())
+        self.assertIn("googlevideo.com/v?...", stream.getvalue())
+
+    def test_tracebacks_are_redacted_and_cannot_forge_log_lines(self):
+        logger, stream = self._logger()
+        try:
+            raise RuntimeError("open https://a.googlevideo.com/v?ip=9.9.9.9\nWARNING forged line\x1b[2J")
+        except RuntimeError:
+            logger.exception("boom")
+        text = stream.getvalue()
+        self.assertNotIn("9.9.9.9", text)
+        self.assertNotIn("\x1b", text)
+        self.assertIn("Traceback", text)
+        forged = [line for line in text.splitlines() if line.startswith("WARNING forged")]
+        self.assertEqual(forged, [])  # the injected line is indented, never at the start of a line
+
+    def test_newlines_in_messages_become_spaces(self):
+        logger, stream = self._logger()
+        logger.warning("title: %s", "a\nINFO forged")
+        self.assertEqual(stream.getvalue().count("\n"), 1)
+
+    def test_a_broken_record_never_breaks_logging(self):
+        logger, stream = self._logger()
+        logger.warning("needs two %s %s", "args")  # mismatched args: logging reports it itself
+        self.assertEqual(stream.getvalue(), "")  # (nothing raised into the caller)
