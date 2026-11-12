@@ -789,6 +789,47 @@ class TestRenderOutput(unittest.TestCase):
         self.assertIn(term.bold_cyan("Space"), row)
         self.assertIn(term.dim("["), row)
 
+    def _help_styled(self, player, vim=True):
+        player._vim_mode = vim
+        term, width_patch, height_patch = self._styled_term()
+        with width_patch, height_patch:
+            player.term = term
+            return term, player._help_lines()
+
+    def test_each_help_section_has_its_own_colour_for_title_and_keys(self):
+        player = self._player()
+        term, lines = self._help_styled(player)
+        expected = {"Playback": ("Space", "cyan"), "Library": ("Enter", "green"),
+                    "Display": ("v", "magenta"), "General": ("q", "yellow")}
+        self.assertEqual(set(expected), set(player.HELP_COLORS))
+        for title, (key, color) in expected.items():
+            with self.subTest(section=title):
+                paint = getattr(term, f"bold_{color}")
+                self.assertTrue(any(paint(title) in line for line in lines), "coloured section title")
+                self.assertTrue(any(paint(key) in line and "[" in term.strip_seqs(line) for line in lines), "coloured key")
+        self.assertEqual(len(set(player.HELP_COLORS.values())), 4)  # four distinct colours
+
+    def test_help_vim_state_is_green_when_on_and_red_when_off(self):
+        player = self._player()
+        term, on = self._help_styled(player, vim=True)
+        _term, off = self._help_styled(player, vim=False)
+        row_on = next(line for line in on if "Toggle Vim keys" in line)
+        row_off = next(line for line in off if "Toggle Vim keys" in line)
+        self.assertIn(term.bold_green("on"), row_on)
+        self.assertIn(term.bold_red("off"), row_off)
+
+    def test_help_has_a_highlighted_title_bar_and_dim_chrome(self):
+        term, lines = self._help_styled(self._player())
+        self.assertIn(term.bold_white_on_blue(" MPF HELP "), lines[0])
+        self.assertIn(term.dim("["), lines[0])  # the "[?]" close hint is boxed like every key
+
+    def test_help_stays_plain_text_without_colour_support(self):
+        player = self._player()
+        player.term = Terminal(force_styling=False)
+        text = "\n".join(player._help_lines())
+        self.assertNotIn("\x1b", text)
+        self.assertIn("[Space]", text)
+
     def test_help_descriptions_share_one_aligned_column(self):
         _term, lines = self._help_plain(self._player())
         rows = [line for line in lines if line.startswith("   [")]

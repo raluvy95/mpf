@@ -1079,72 +1079,85 @@ class BlessedMusicPlayer:
             animated_frame,
         )
 
-    def _keycap(self, key: str) -> str:
-        """A key drawn as its own box: dim brackets around a bold key, e.g. [Space] or [n]."""
+    def _keycap(self, key: str, color: str = "cyan") -> str:
+        """A key drawn as its own box: dim brackets around a bold coloured key, e.g. [Space] or [n]."""
         term = self.term
-        return term.dim("[") + term.bold_cyan(key) + term.dim("]")
+        return term.dim("[") + getattr(term, f"bold_{color}")(key) + term.dim("]")
 
-    def _help_sections(self) -> List[Tuple[str, List[Tuple[Tuple[str, ...], str]]]]:
-        """Help content as (section title, [(keys, description)]); Vim mode swaps the movement keys."""
+    HELP_COLORS = {"Playback": "cyan", "Library": "green", "Display": "magenta", "General": "yellow"}
+
+    def _help_sections(self) -> List[Tuple[str, List[Tuple[Tuple[str, ...], str, Optional[Tuple[str, str]]]]]]:
+        """Help content as (title, [(keys, description, note)]); a note is (text, colour) shown as "(now text)".
+
+        Vim mode swaps the movement keys.
+        """
         vim = self._vim_mode
         return [
             (
                 "Playback",
                 [
-                    (("Space",), "Play or pause"),
-                    (("n", "p"), "Next or previous track"),
-                    (("s",), "Toggle shuffle"),
-                    (("r",), "Cycle repeat mode"),
-                    (("m",), "Mute"),
-                    (("+", "-"), "Change volume"),
-                    ((("h", "l") if vim else ("←", "→")), "Seek 5 seconds"),
-                    (("[", "]"), "Seek 30 seconds"),
+                    (("Space",), "Play or pause", None),
+                    (("n", "p"), "Next or previous track", None),
+                    (("s",), "Toggle shuffle", None),
+                    (("r",), "Cycle repeat mode", None),
+                    (("m",), "Mute", None),
+                    (("+", "-"), "Change volume", None),
+                    ((("h", "l") if vim else ("←", "→")), "Seek 5 seconds", None),
+                    (("[", "]"), "Seek 30 seconds", None),
                 ],
             ),
             (
                 "Library",
                 [
-                    ((("j", "k") if vim else ("↑", "↓")), "Browse tracks"),
-                    (("Enter",), "Play selected track"),
-                    (("/",), "Search tracks"),
-                    (("o",), "Open a YouTube URL"),
-                    (("Click",), "Progress bar seeks, repeat/shuffle icons toggle"),
+                    ((("j", "k") if vim else ("↑", "↓")), "Browse tracks", None),
+                    (("Enter",), "Play selected track", None),
+                    (("/",), "Search tracks", None),
+                    (("o",), "Open a YouTube URL", None),
+                    (("Click",), "Progress bar seeks, repeat/shuffle icons toggle", None),
                 ],
             ),
             (
                 "Display",
                 [
-                    (("v",), "Toggle visualizer"),
-                    (("a",), "Change visualizer style"),
-                    (("t",), "Toggle thumbnail preview"),
-                    (("V",), f"Toggle Vim keys (now {'on' if vim else 'off'})"),
+                    (("v",), "Toggle visualizer", None),
+                    (("a",), "Change visualizer style", None),
+                    (("t",), "Toggle thumbnail preview", None),
+                    (("V",), "Toggle Vim keys", ("on", "green") if vim else ("off", "red")),
                 ],
             ),
             (
                 "General",
                 [
-                    (("?", "Esc"), "Close help"),
-                    (("q",), "Quit"),
+                    (("?", "Esc"), "Close help", None),
+                    (("q",), "Quit", None),
                 ],
             ),
         ]
 
     def _help_lines(self) -> List[str]:
-        """Styled help screen lines. Keys sit in boxes and descriptions share one aligned column."""
+        """Styled help screen lines.
+
+        Keys sit in boxes, each section has its own colour for its title and keys, and descriptions
+        share one aligned column.
+        """
         term = self.term
         sections = self._help_sections()
 
         def plain_width(keys: Tuple[str, ...]) -> int:
             return sum(len(key) + 2 for key in keys) + len(keys) - 1  # "[k]" per key, one space between
 
-        column = max(plain_width(keys) for _title, rows in sections for keys, _desc in rows)
-        lines = [" " + term.bold_cyan("MPF HELP")]
+        column = max(plain_width(keys) for _title, rows in sections for keys, _desc, _note in rows)
+        lines = [" " + term.bold_white_on_blue(" MPF HELP ") + term.dim("  press ") + self._keycap("?", "white") + term.dim(" to close")]
         for title, rows in sections:
+            color = self.HELP_COLORS.get(title, "cyan")
             lines.append("")
-            lines.append(" " + term.bold(title))
-            for keys, description in rows:
-                caps = " ".join(self._keycap(key) for key in keys)
-                lines.append("   " + caps + " " * (column - plain_width(keys) + 2) + term.white(description))
+            lines.append(" " + getattr(term, f"bold_{color}")(title) + " " + term.dim("─" * max(0, 12 - len(title))))
+            for keys, description, note in rows:
+                caps = " ".join(self._keycap(key, color) for key in keys)
+                text = term.white(description)
+                if note:
+                    text += term.dim(" (now ") + getattr(term, f"bold_{note[1]}")(note[0]) + term.dim(")")
+                lines.append("   " + caps + " " * (column - plain_width(keys) + 2) + text)
         return lines
 
     def _render_help(self) -> None:
