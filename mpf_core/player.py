@@ -113,7 +113,7 @@ class BlessedMusicPlayer:
     INPUT_POLL_INTERVAL = 0.25  # inkey returns at once on a keypress; this only bounds shutdown latency
     SHUFFLE_ICONS = {True: "\U000f049f", False: "\U000f049e"}
     SUMMARY_SEPARATOR = "  ·  "
-    FOOTER_HINTS = ["? help", "space pause", "/ search", "o open", "q quit"]
+    FOOTER_HINTS = [("?", "help"), ("Space", "pause"), ("/", "search"), ("o", "open"), ("q", "quit")]
 
     def __init__(
         self,
@@ -1079,42 +1079,81 @@ class BlessedMusicPlayer:
             animated_frame,
         )
 
+    def _keycap(self, key: str) -> str:
+        """A key drawn as its own box: dim brackets around a bold key, e.g. [Space] or [n]."""
+        term = self.term
+        return term.dim("[") + term.bold_cyan(key) + term.dim("]")
+
+    def _help_sections(self) -> List[Tuple[str, List[Tuple[Tuple[str, ...], str]]]]:
+        """Help content as (section title, [(keys, description)]); Vim mode swaps the movement keys."""
+        vim = self._vim_mode
+        return [
+            (
+                "Playback",
+                [
+                    (("Space",), "Play or pause"),
+                    (("n", "p"), "Next or previous track"),
+                    (("s",), "Toggle shuffle"),
+                    (("r",), "Cycle repeat mode"),
+                    (("m",), "Mute"),
+                    (("+", "-"), "Change volume"),
+                    ((("h", "l") if vim else ("←", "→")), "Seek 5 seconds"),
+                    (("[", "]"), "Seek 30 seconds"),
+                ],
+            ),
+            (
+                "Library",
+                [
+                    ((("j", "k") if vim else ("↑", "↓")), "Browse tracks"),
+                    (("Enter",), "Play selected track"),
+                    (("/",), "Search tracks"),
+                    (("o",), "Open a YouTube URL"),
+                    (("Click",), "Progress bar seeks, repeat/shuffle icons toggle"),
+                ],
+            ),
+            (
+                "Display",
+                [
+                    (("v",), "Toggle visualizer"),
+                    (("a",), "Change visualizer style"),
+                    (("t",), "Toggle thumbnail preview"),
+                    (("V",), f"Toggle Vim keys (now {'on' if vim else 'off'})"),
+                ],
+            ),
+            (
+                "General",
+                [
+                    (("?", "Esc"), "Close help"),
+                    (("q",), "Quit"),
+                ],
+            ),
+        ]
+
+    def _help_lines(self) -> List[str]:
+        """Styled help screen lines. Keys sit in boxes and descriptions share one aligned column."""
+        term = self.term
+        sections = self._help_sections()
+
+        def plain_width(keys: Tuple[str, ...]) -> int:
+            return sum(len(key) + 2 for key in keys) + len(keys) - 1  # "[k]" per key, one space between
+
+        column = max(plain_width(keys) for _title, rows in sections for keys, _desc in rows)
+        lines = [" " + term.bold_cyan("MPF HELP")]
+        for title, rows in sections:
+            lines.append("")
+            lines.append(" " + term.bold(title))
+            for keys, description in rows:
+                caps = " ".join(self._keycap(key) for key in keys)
+                lines.append("   " + caps + " " * (column - plain_width(keys) + 2) + term.white(description))
+        return lines
+
     def _render_help(self) -> None:
         """Render a compact keyboard reference without leaving the player."""
         term = self.term
-        width = term.width
-        lines = [
-            " MPF HELP",
-            "",
-            " Playback",
-            "   Space       Play or pause",
-            "   n / p       Next or previous track",
-            "   s           Toggle shuffle",
-            "   r           Cycle repeat mode",
-            "   m           Mute",
-            "   + / -       Change volume",
-            f"   {'h / l' if self._vim_mode else 'Left/Right':11} Seek 5 seconds",
-            "   [ / ]       Seek 30 seconds",
-            "",
-            " Library",
-            f"   {'j / k' if self._vim_mode else 'Up/Down':11} Browse tracks",
-            "   Enter       Play selected track",
-            "   /           Search tracks",
-            "   o           Open a YouTube URL",
-            "   Click       Progress bar seeks, repeat/shuffle icons toggle",
-            "",
-            f" Vim mode: {'enabled' if self._vim_mode else 'disabled'} (V toggles it)",
-            "",
-            "   v           Toggle visualizer",
-            "   a           Change visualizer style",
-            "   t           Toggle thumbnail preview",
-            "   ? / Esc     Close help",
-            "   q           Quit",
-        ]
+        width = max(0, term.width - 3)
         output = [term.clear + term.home]
-        for row, line in enumerate(lines[: term.height]):
-            style = term.bold_cyan if row == 0 else term.white
-            output.append(self._move(2, row) + style(line[: max(0, width - 3)]) + term.clear_eol)
+        for row, line in enumerate(self._help_lines()[: term.height]):
+            output.append(self._move(2, row) + term.truncate(line, width) + term.clear_eol)
         print("".join(output), end="", flush=True)
 
     @staticmethod
@@ -1297,12 +1336,15 @@ class BlessedMusicPlayer:
             out.append(self._move(0, r_clear) + term.clear_eol)
 
         footer = ""
-        for hint in self.FOOTER_HINTS:
-            candidate = f"{footer}  ·  {hint}" if footer else f" {hint}"
-            if len(candidate) > w - 1:
+        footer_width = 0
+        for key, label in self.FOOTER_HINTS:
+            plain = f"[{key}] {label}"
+            separator = "  ·  " if footer else " "
+            if footer_width + len(separator) + len(plain) > w - 1:
                 break
-            footer = candidate
-        out.append(self._move(0, footer_row) + term.dim(footer) + term.clear_eol)
+            footer += term.dim(separator) + self._keycap(key) + term.dim(f" {label}")
+            footer_width += len(separator) + len(plain)
+        out.append(self._move(0, footer_row) + footer + term.clear_eol)
 
         out.append(term.hide_cursor)
         print("".join(out), end="", flush=True)

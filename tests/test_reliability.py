@@ -760,6 +760,84 @@ class TestRenderOutput(unittest.TestCase):
             player._render()
         return out.getvalue(), player.term
 
+    def _styled_term(self, width=100, height=40):
+        term = Terminal(force_styling=True, kind="xterm-256color")
+        return term, patch.object(Terminal, "width", new_callable=PropertyMock, return_value=width), patch.object(
+            Terminal, "height", new_callable=PropertyMock, return_value=height
+        )
+
+    def _help_plain(self, player, vim=True, width=100):
+        player._vim_mode = vim
+        term, width_patch, height_patch = self._styled_term(width)
+        with width_patch, height_patch:
+            player.term = term
+            return term, [term.strip_seqs(line) for line in player._help_lines()]
+
+    def test_help_shows_every_key_in_its_own_box(self):
+        term, lines = self._help_plain(self._player())
+        text = "\n".join(lines)
+        for boxed in ("[Space]", "[n] [p]", "[s]", "[Enter]", "[/]", "[?] [Esc]", "[q]", "[V]", "[[] []]"):
+            self.assertIn(boxed, text)
+        self.assertNotIn(" n / p ", text)  # the old unboxed style is gone
+
+    def test_help_keys_are_styled_apart_from_their_descriptions(self):
+        player = self._player()
+        term, width_patch, height_patch = self._styled_term()
+        with width_patch, height_patch:
+            player.term = term
+            row = next(line for line in player._help_lines() if "Play or pause" in line)
+        self.assertIn(term.bold_cyan("Space"), row)
+        self.assertIn(term.dim("["), row)
+
+    def test_help_descriptions_share_one_aligned_column(self):
+        _term, lines = self._help_plain(self._player())
+        rows = [line for line in lines if line.startswith("   [")]
+        self.assertGreater(len(rows), 15)
+        columns = {len(line) - len(line.split("]")[-1].lstrip()) for line in rows}
+        self.assertEqual(len(columns), 1, columns)
+
+    def test_help_movement_keys_follow_vim_mode(self):
+        player = self._player()
+        _term, vim = self._help_plain(player, vim=True)
+        _term, standard = self._help_plain(player, vim=False)
+        self.assertTrue(any("[h] [l]" in line and "Seek 5" in line for line in vim))
+        self.assertTrue(any("[j] [k]" in line and "Browse" in line for line in vim))
+        self.assertTrue(any("[←] [→]" in line and "Seek 5" in line for line in standard))
+        self.assertTrue(any("[↑] [↓]" in line and "Browse" in line for line in standard))
+        self.assertTrue(any("now on" in line for line in vim))
+        self.assertTrue(any("now off" in line for line in standard))
+
+    def test_help_truncates_by_visible_width_without_cutting_escape_codes(self):
+        player = self._player()
+        for width in (12, 20, 40):
+            with self.subTest(width=width):
+                term, width_patch, height_patch = self._styled_term(width)
+                out = io.StringIO()
+                with width_patch, height_patch, redirect_stdout(out):
+                    player.term = term
+                    player._render_help()
+                for chunk in out.getvalue().split(term.clear_eol):
+                    visible = term.strip_seqs(chunk).replace(term.clear, "")
+                    self.assertLessEqual(len(visible.strip("\x1b")), width)
+                self.assertNotRegex(out.getvalue(), r"\x1b\[[0-9;]*$")  # no dangling half sequence
+
+    def test_footer_hints_are_boxed_and_drop_whole_hints_when_narrow(self):
+        player = self._player()
+        for width, expected in ((100, ["[?] help", "[Space] pause", "[/] search", "[o] open", "[q] quit"]),
+                                (36, ["[?] help", "[Space] pause"])):
+            with self.subTest(width=width):
+                term, width_patch, height_patch = self._styled_term(width, 30)
+                out = io.StringIO()
+                with width_patch, height_patch, redirect_stdout(out):
+                    player.term = term
+                    player._render()
+                footer = term.strip_seqs(out.getvalue())
+                for hint in expected:
+                    self.assertIn(hint, footer)
+                if width == 36:
+                    self.assertNotIn("[/] search", footer)  # dropped whole, never cut in half
+                    self.assertNotIn("[/", footer)
+
     def test_closing_help_wipes_the_screen_and_stale_thumbnail(self):
         player = self._player()
         player._show_help = True
