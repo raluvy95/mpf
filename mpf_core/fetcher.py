@@ -11,6 +11,7 @@ import sys
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
+from mpf_core.metadata import ID_LIMIT, NAME_LIMIT, TITLE_LIMIT, URL_LIMIT, clean_text
 from mpf_core.models import Track
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ def _extract_info_with_executable(executable: str, url: str) -> Any:
         raise PlaylistFetchError(f"yt-dlp timed out after {YTDLP_TIMEOUT_SECONDS}s") from err
     if result.returncode != 0:
         lines = [line for line in result.stderr.strip().splitlines() if line.strip()]
-        raise PlaylistFetchError(f"Unable to retrieve URL: {lines[-1] if lines else 'yt-dlp failed'}")
+        raise PlaylistFetchError(f"Unable to retrieve URL: {clean_text(lines[-1] if lines else 'yt-dlp failed')}")
     try:
         return json.loads(result.stdout)
     except ValueError as err:
@@ -109,9 +110,9 @@ def _extract_info_with_module(url: str, ydl_opts: Optional[Dict[str, Any]]) -> A
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
     except yt_dlp.utils.DownloadError as err:
-        raise PlaylistFetchError(f"Unable to retrieve URL: {err}") from err
+        raise PlaylistFetchError(f"Unable to retrieve URL: {clean_text(str(err))}") from err
     except OSError as err:
-        raise PlaylistFetchError(f"Network error while retrieving URL: {err}") from err
+        raise PlaylistFetchError(f"Network error while retrieving URL: {clean_text(str(err))}") from err
 
 
 def fetch_playlist_tracks(url: str, ydl_opts: Optional[Dict[str, Any]] = None) -> List[Track]:
@@ -142,10 +143,10 @@ def fetch_playlist_tracks(url: str, ydl_opts: Optional[Dict[str, Any]] = None) -
         if not entry:
             skipped += 1
             continue
-        video_id = entry.get("id") or str(i)
+        video_id = clean_text(entry.get("id"), ID_LIMIT) or str(i)
 
         # yt-dlp leaves unavailable entries empty or with placeholder titles.
-        raw_title = entry.get("title") or ""
+        raw_title = clean_text(entry.get("title"), TITLE_LIMIT)
         if not raw_title or raw_title in {"[Private video]", "[Deleted video]"}:
             skipped += 1
             continue
@@ -155,13 +156,13 @@ def fetch_playlist_tracks(url: str, ydl_opts: Optional[Dict[str, Any]] = None) -
             continue
 
         # Preserve an extractor-provided URL only for a non-YouTube entry.
-        entry_url = entry.get("url") or ""
+        entry_url = clean_text(entry.get("url"), URL_LIMIT)
         url_override = ""
         if entry_url.startswith("http") and "youtube.com" not in entry_url and "youtu.be" not in entry_url:
             url_override = entry_url
 
         duration = entry.get("duration")
-        uploader = entry.get("uploader") or entry.get("channel") or ""
+        uploader = clean_text(entry.get("uploader") or entry.get("channel"), NAME_LIMIT)
 
         tracks.append(
             Track(

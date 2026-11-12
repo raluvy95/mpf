@@ -40,6 +40,7 @@ from mpf_core.fetcher import (
     fetch_playlist_tracks,
     validate_media_url,
 )
+from mpf_core.metadata import clean_text
 from mpf_core.models import RepeatMode, TrackQueue, format_time
 from mpf_core.mpris import MprisService, build_metadata
 from mpf_core.paths import CONFIG_FILE
@@ -372,7 +373,7 @@ class BlessedMusicPlayer:
 
     def _on_mpv_log(self, level: str, prefix: str, text: str) -> None:
         """Keep mpv's real error lines (e.g. "HTTP error 403 Forbidden") for the skip message and log."""
-        self._mpv_errors.append(f"{prefix}: {text}")
+        self._mpv_errors.append(clean_text(f"{prefix}: {text}", 300))
 
     def _set_ytdl_client(self, client: Optional[str]) -> None:
         """Force a YouTube client for the next load, or None to let yt-dlp choose."""
@@ -628,7 +629,7 @@ class BlessedMusicPlayer:
             if self._retry_with_fallback_client(current):
                 return
             self._failed_track_ids.add(current.id)
-            error = event.get("file_error") or event.get("error") or "media unavailable"
+            error = clean_text(event.get("file_error") or event.get("error"), 200) or "media unavailable"
             detail = self._mpv_errors[-1] if self._mpv_errors else ""
             self._status_msg = f"Skipped {current.title}: {error}" + (f" ({detail})" if detail else "")
             logger.warning("Playback failed for %s: %s [%s]", current.id, error, self._mpv_errors_text())

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from mpf_core.fuzzy import fuzzy_filter_tracks
+from mpf_core.metadata import ID_LIMIT, NAME_LIMIT, TITLE_LIMIT, clean_text
 
 # ── URL/thumbnail helpers ────────────────────────────────────────────────────
 
@@ -105,11 +106,12 @@ class Track:
     def from_cache_tuple(cls, t: Tuple) -> "Track":
         """Reconstruct from a positional tuple produced by :meth:`to_cache_tuple`."""
         video_id, title, dur, uploader = t[0], t[1], t[2], t[3] if len(t) > 3 else ""
+        # The cache is untrusted input too: it may predate sanitising or have been edited.
         return cls(
-            id=video_id,
-            title=title,
+            id=clean_text(video_id, ID_LIMIT),
+            title=clean_text(title, TITLE_LIMIT),
             duration=float(dur) if dur is not None else None,
-            uploader=uploader,
+            uploader=clean_text(uploader, NAME_LIMIT),
         )
 
     # ------------------------------------------------------------------
