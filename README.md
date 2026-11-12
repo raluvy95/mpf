@@ -59,6 +59,9 @@ temporary workflow artifacts. Release tags such as `v1.0.0` create a GitHub
 Release with the versioned AppImage attached and notes generated from commits
 since the previous release. The AppImage does not bundle `yt-dlp`: like `mpv`, it uses
 the one installed on your system, so YouTube fixes arrive with your normal updates.
+Every release also has a `.sha256` file next to the AppImage; check a download with
+`sha256sum -c mpf-VERSION-x86_64.AppImage.sha256`. It detects corrupted or swapped files
+that don't match; it is not a signature, so get both files from the release page itself.
 
 To build locally on Linux, install `appimagetool`, create the development
 environment above, then run:

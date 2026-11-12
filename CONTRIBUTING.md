@@ -14,7 +14,9 @@ python3.14 -m venv .venv
 `constraints.txt` pins the exact versions CI tests with. When intentionally upgrading
 dependencies, install `requirements-dev.txt` into a clean virtual environment, run the
 checks below, and replace its contents with that environment's `pip freeze` output, minus the
-`yt-dlp` line: it is deliberately not pinned, because YouTube breaks older releases.
+`yt-dlp` line: it is deliberately not pinned, because YouTube breaks older releases. For the
+same reason `constraints.txt` has no hashes: pip's hash-checking mode requires every package to be
+pinned with a hash, which an unpinned `yt-dlp` rules out.
 
 Before submitting a change, run:
 
