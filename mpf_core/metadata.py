@@ -19,6 +19,30 @@ _WHITESPACE_CONTROLS = re.compile(r"[\t\n\r\x0b\x0c  ]+")
 _UNSAFE = re.compile("[\x00-\x1f\x7f-\x9f‪-‮⁦-⁩\ud800-\udfff]")
 
 
+_URL = re.compile(r"https?://([^\s/?#]+)([^\s?#]*)([?#]\S*)?", re.IGNORECASE)
+# Hosts whose URLs are public identifiers worth keeping in messages (?v=VIDEO_ID, ?list=...).
+_PLAIN_URL_HOSTS = ("youtube.com", "youtu.be", "ytimg.com")
+
+
+def redact_urls(text: str) -> str:
+    """Drop the query/fragment of URLs, except YouTube page and thumbnail URLs.
+
+    Stream URLs from googlevideo.com carry the client's IP address and signed tokens that stay valid
+    for hours; they must not end up in log files or on screen.
+    """
+
+    def redact(match: re.Match[str]) -> str:
+        scheme = match.group(0).split("://", 1)[0]
+        hostport = match.group(1).split("@")[-1]  # never keep user:password@
+        host = hostport.lower().split(":")[0]
+        query = match.group(3) or ""
+        if query and not host.endswith(_PLAIN_URL_HOSTS):
+            query = "?..."
+        return f"{scheme}://{hostport}{match.group(2)}{query}"
+
+    return _URL.sub(redact, text)
+
+
 def clean_text(text: object, limit: int = TITLE_LIMIT) -> str:
     """Return ``text`` without control characters, bidi overrides or lone surrogates, capped to ``limit``."""
     if not isinstance(text, str):

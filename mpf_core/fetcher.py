@@ -11,7 +11,7 @@ import sys
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
-from mpf_core.metadata import ID_LIMIT, NAME_LIMIT, TITLE_LIMIT, URL_LIMIT, clean_text
+from mpf_core.metadata import ID_LIMIT, NAME_LIMIT, TITLE_LIMIT, URL_LIMIT, clean_text, redact_urls
 from mpf_core.models import Track
 
 logger = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ def _extract_info_with_executable(executable: str, url: str) -> Any:
         raise PlaylistFetchError(f"yt-dlp timed out after {YTDLP_TIMEOUT_SECONDS}s") from err
     if result.returncode != 0:
         lines = [line for line in result.stderr.strip().splitlines() if line.strip()]
-        raise PlaylistFetchError(f"Unable to retrieve URL: {clean_text(lines[-1] if lines else 'yt-dlp failed')}")
+        raise PlaylistFetchError(f"Unable to retrieve URL: {clean_text(redact_urls(lines[-1] if lines else 'yt-dlp failed'))}")
     try:
         return json.loads(result.stdout)
     except ValueError as err:
@@ -110,9 +110,9 @@ def _extract_info_with_module(url: str, ydl_opts: Optional[Dict[str, Any]]) -> A
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
     except yt_dlp.utils.DownloadError as err:
-        raise PlaylistFetchError(f"Unable to retrieve URL: {clean_text(str(err))}") from err
+        raise PlaylistFetchError(f"Unable to retrieve URL: {clean_text(redact_urls(str(err)))}") from err
     except OSError as err:
-        raise PlaylistFetchError(f"Network error while retrieving URL: {clean_text(str(err))}") from err
+        raise PlaylistFetchError(f"Network error while retrieving URL: {clean_text(redact_urls(str(err)))}") from err
 
 
 def fetch_playlist_tracks(url: str, ydl_opts: Optional[Dict[str, Any]] = None) -> List[Track]:

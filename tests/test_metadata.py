@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from mpf_core.fetcher import fetch_playlist_tracks
-from mpf_core.metadata import clean_text, parse_track, strip_noise
+from mpf_core.metadata import clean_text, parse_track, redact_urls, strip_noise
 from mpf_core.models import Track
 from mpf_core.player import BlessedMusicPlayer
 
@@ -33,6 +33,33 @@ class TestCleanText(unittest.TestCase):
         for value in (None, 5, b"bytes", ["x"]):
             with self.subTest(value=value):
                 self.assertEqual(clean_text(value), "")
+
+
+class TestRedactUrls(unittest.TestCase):
+    def test_signed_stream_urls_lose_their_query(self):
+        line = "stream: Failed to open https://rr1---sn-x.googlevideo.com/videoplayback?expire=1&ip=2a02%3Af700&sig=AB"
+        out = redact_urls(line)
+        self.assertEqual(out, "stream: Failed to open https://rr1---sn-x.googlevideo.com/videoplayback?...")
+        self.assertNotIn("2a02", out)
+        self.assertNotIn("sig=", out)
+
+    def test_youtube_page_and_thumbnail_urls_keep_their_ids(self):
+        for url in ("https://www.youtube.com/watch?v=abc123&list=PL1", "https://youtu.be/abc?t=5",
+                    "https://i.ytimg.com/vi/abc/hqdefault.jpg?sqp=x"):
+            with self.subTest(url=url):
+                self.assertEqual(redact_urls(f"see {url} now"), f"see {url} now")
+
+    def test_credentials_in_urls_are_dropped_and_plain_text_is_untouched(self):
+        self.assertEqual(redact_urls("http://user:pw@evil.example/p?token=S#f"), "http://evil.example/p?...")
+        self.assertEqual(redact_urls("no url, just words"), "no url, just words")
+        self.assertEqual(redact_urls("https://a.example/x?q=1 and https://b.example/y"), "https://a.example/x?... and https://b.example/y")
+
+    def test_mpv_log_lines_are_redacted_before_being_kept(self):
+        player = BlessedMusicPlayer(auto_play=False)
+        self.addCleanup(player.previewer.close)
+        player._on_mpv_log("error", "ffmpeg", "https: HTTP error 403 Forbidden https://rr1.googlevideo.com/v?ip=9.9.9.9&sig=Q")
+        self.assertNotIn("9.9.9.9", player._mpv_errors_text())
+        self.assertIn("403 Forbidden", player._mpv_errors_text())
 
 
 class TestParseTrack(unittest.TestCase):

@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from mpf import DEFAULT_PLAYLIST_URL, __version__, parse_cli_args
+from mpf import DEFAULT_PLAYLIST_URL, __version__, configure_logging, parse_cli_args
 from mpf_core import (
     KittyPreviewer,
     PipeWireSpectrumAnalyzer,
@@ -911,3 +911,60 @@ class TestYtdlFallbackConfig(unittest.TestCase):
         for bad in ('"tv"', '["tv,ios"]', '["a=b"]', "[1]", '[""]'):
             with self.subTest(bad=bad):
                 self.assertEqual(self._load('{"ytdl_fallback_clients": %s}' % bad), DEFAULT_YTDL_FALLBACK_CLIENTS)
+
+
+class TestLogging(unittest.TestCase):
+    def setUp(self):
+        import logging
+
+        self.root = logging.getLogger()
+        self.saved = (self.root.handlers[:], self.root.level)
+        self.root.handlers.clear()
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        for handler in self.root.handlers[:]:
+            handler.close()
+        self.root.handlers[:] = self.saved[0]
+        self.root.setLevel(self.saved[1])
+
+    def test_log_and_directory_are_private_and_old_logs_are_tightened(self):
+        import logging
+
+        with tempfile.TemporaryDirectory() as directory:
+            cache_dir = os.path.join(directory, "cache")
+            os.mkdir(cache_dir, 0o755)
+            log_file = os.path.join(cache_dir, "mpf.log")
+            with open(log_file, "w", encoding="utf-8") as file:  # as an older version left it
+                file.write("old\n")
+            os.chmod(log_file, 0o644)
+
+            configure_logging(cache_dir, log_file)
+            logging.getLogger("t").warning("hello")
+            for handler in self.root.handlers:
+                handler.flush()
+
+            self.assertEqual(os.stat(cache_dir).st_mode & 0o777, 0o700)
+            self.assertEqual(os.stat(log_file).st_mode & 0o777, 0o600)
+            with open(log_file, encoding="utf-8") as file:
+                self.assertIn("hello", file.read())
+
+    def test_log_rotates_with_private_files(self):
+        import logging
+
+        with tempfile.TemporaryDirectory() as directory:
+            log_file = os.path.join(directory, "mpf.log")
+            configure_logging(directory, log_file, max_bytes=300, backups=1)
+            for i in range(40):
+                logging.getLogger("t").warning("line %d %s", i, "x" * 40)
+            for handler in self.root.handlers:
+                handler.flush()
+
+            files = sorted(name for name in os.listdir(directory) if name.startswith("mpf.log"))
+            self.assertEqual(files, ["mpf.log", "mpf.log.1"])  # capped at one backup
+            for name in files:
+                self.assertEqual(os.stat(os.path.join(directory, name)).st_mode & 0o777, 0o600)
+
+    def test_unusable_log_location_silences_logging_instead_of_failing(self):
+        configure_logging("/proc/definitely/not/writable", "/proc/definitely/not/writable/mpf.log")
+        self.assertEqual(self.root.level, 50)  # CRITICAL
