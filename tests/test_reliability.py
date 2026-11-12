@@ -679,7 +679,8 @@ class TestRenderProtection(unittest.TestCase):
     def test_signature_changes_with_style_visibility_and_queue_order(self):
         player = self.player
         base = player._render_signature()
-        player._spectrum_style = "bars"
+        styles = player.SPECTRUM_STYLES
+        player._spectrum_style = styles[(styles.index(player._spectrum_style) + 1) % len(styles)]
         self.assertNotEqual(player._render_signature(), base)
         base = player._render_signature()
         player._show_visualizer = not player._show_visualizer
