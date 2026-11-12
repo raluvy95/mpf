@@ -1,4 +1,4 @@
-"""PipeWire audio spectrum visualizer with smooth asymmetric EMA and spatial filtering."""
+"""PipeWire audio spectrum visualizer: log-spaced band energy in dB, slow AGC, fast attack / gravity decay."""
 
 from __future__ import annotations
 
@@ -18,32 +18,49 @@ class PipeWireSpectrumAnalyzer:
     """Captures audio stream specifically from MPV and computes live frequency bands using numpy."""
 
     SAMPLE_RATE = 22050
-    CHUNK_SIZE = 512
+    CHUNK_SIZE = 512  # samples consumed per analysis step (~23 ms)
+    FFT_SIZE = 1024  # sliding analysis window (~46 ms): short enough to stay on the beat
+    MIN_FREQ = 40.0
+    MAX_FREQ = 10_000.0
+    DB_FLOOR = -45.0  # band energy relative to the recent loudness that maps to an empty bar
+    DB_CEIL = -6.0  # ... and to a full bar
+    TILT_DB_PER_OCTAVE = 0.5  # lift highs slightly; band energy on log-spaced bands is already pink-flat
+    AGC_RELEASE_SECONDS = 3.0  # how slowly the reference level follows quieter music
+    MIN_LEVEL = 3e-5  # reference level floor (about -90 dBFS), so near-silence still shows
+    ATTACK = 0.8  # fraction of the way to a louder value covered per step
+    DECAY = 0.9  # per-step multiplier when a band falls
+    PEAK_FALL = 0.02
 
     def __init__(self, num_bands: int = 32, target_node: str = "mpv") -> None:
         self.num_bands = num_bands
         self.target_node = target_node
         self.bands = np.zeros(num_bands, dtype=np.float32)
         self.peaks = np.zeros(num_bands, dtype=np.float32)
+        # Highest band value seen since the last get_bands(), so a short hit that lands between two
+        # screen redraws (the UI draws far less often than we analyse) is never skipped.
+        self._since_read = np.zeros(num_bands, dtype=np.float32)
         self.enabled = False
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._process: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
         self._process_lock = threading.Lock()
-        self._window = np.hanning(self.CHUNK_SIZE).astype(np.float32)
-        num_fft_bins = self.CHUNK_SIZE // 2 + 1
-        starts = []
-        ends = []
-        for band_idx in range(self.num_bands):
-            start_bin = int((band_idx / self.num_bands) ** 2 * (num_fft_bins - 1))
-            end_bin = max(start_bin + 1, int(((band_idx + 1) / self.num_bands) ** 2 * num_fft_bins))
-            starts.append(start_bin)
-            ends.append(min(num_fft_bins, end_bin))
-        self._band_starts = np.asarray(starts, dtype=np.intp)
-        self._band_ends = np.asarray(ends, dtype=np.intp)
-        self._band_widths = self._band_ends - self._band_starts
-        self._band_boosts = 1.0 + (np.arange(self.num_bands, dtype=np.float32) / self.num_bands) * 2.2
+
+        self._window = np.hanning(self.FFT_SIZE).astype(np.float32)
+        # One-sided power scale so that the bin powers of a stationary signal sum to its mean square.
+        self._power_scale = np.float32(2.0 / (self.FFT_SIZE * float(np.sum(self._window**2))))
+        self._buffer = np.zeros(self.FFT_SIZE, dtype=np.float32)
+        self._level = self.MIN_LEVEL**2  # slow reference power (the AGC)
+        self._level_decay = float(np.exp(-2.0 * self.CHUNK_SIZE / self.SAMPLE_RATE / self.AGC_RELEASE_SECONDS))
+
+        # Geometric band edges as fractional FFT-bin positions. Bin k covers [k, k + 1) here, hence +0.5
+        # to centre it on its frequency. Fractional edges are evaluated on the cumulative power, so bass
+        # bands narrower than one bin still get a smooth, distinct share instead of repeating a bin.
+        edges_hz = np.geomspace(self.MIN_FREQ, self.MAX_FREQ, num_bands + 1)
+        self._edge_bins = edges_hz * self.FFT_SIZE / self.SAMPLE_RATE + 0.5
+        self._cum_axis = np.arange(self.FFT_SIZE // 2 + 2, dtype=np.float64)
+        centres = np.sqrt(edges_hz[:-1] * edges_hz[1:])
+        self._tilt_db = (self.TILT_DB_PER_OCTAVE * np.log2(centres / 1000.0)).astype(np.float32)
 
     def start(self) -> None:
         if self._running:
@@ -92,6 +109,8 @@ class PipeWireSpectrumAnalyzer:
                 "pw-record",
                 "--target",
                 self.target_node,
+                "--latency",
+                "20ms",  # tighter delivery than the 100 ms default (worst read gap 43 -> 32 ms measured)
                 "--rate",
                 str(self.SAMPLE_RATE),
                 "--channels",
@@ -104,6 +123,7 @@ class PipeWireSpectrumAnalyzer:
             return [
                 "parec",
                 "--format=s16le",
+                "--latency-msec=20",
                 f"--rate={self.SAMPLE_RATE}",
                 "--channels=1",
             ]
@@ -168,62 +188,62 @@ class PipeWireSpectrumAnalyzer:
         if len(samples) < self.CHUNK_SIZE:
             return
 
-        norm_samples = (samples[: self.CHUNK_SIZE].astype(np.float32) / 32768.0) * self._window
-        rms = float(np.sqrt(np.mean(np.square(norm_samples))))
-        if not np.any(samples):
-            raw_bands = np.zeros(self.num_bands, dtype=np.float32)
+        buf = self._buffer
+        buf[: -self.CHUNK_SIZE] = buf[self.CHUNK_SIZE :]
+        buf[-self.CHUNK_SIZE :] = samples[: self.CHUNK_SIZE].astype(np.float32) * np.float32(1.0 / 32768.0)
+
+        if not buf.any():
+            levels = np.zeros(self.num_bands, dtype=np.float32)
+            self._level = max(self._level * self._level_decay, self.MIN_LEVEL**2)
         else:
-            # Audio capture is post-mix, so remove absolute output gain before
-            # the FFT. This keeps MPV's volume independent from bar height.
-            norm_samples /= rms
-            fft_result = np.abs(np.fft.rfft(norm_samples))
-            num_fft_bins = len(fft_result)
-            if num_fft_bins == 0:
-                return
+            power = np.abs(np.fft.rfft(buf * self._window)) ** 2 * self._power_scale
+            cumulative = np.concatenate(([0.0], np.cumsum(power, dtype=np.float64)))
+            at_edges = np.interp(self._edge_bins, self._cum_axis, cumulative)
+            band_power = np.maximum(np.diff(at_edges), 0.0)
 
-            cumulative = np.concatenate(([0.0], np.cumsum(fft_result)))
-            means = (cumulative[self._band_ends] - cumulative[self._band_starts]) / self._band_widths
-            raw_bands = np.clip(
-                np.log1p(means * 0.025 * self._band_boosts) / np.log1p(8.0),
-                0.0,
-                1.0,
-            )
+            # Slow AGC on the energy the bars can actually show (DC and sub-bass would otherwise
+            # swamp it): jump up to a louder level at once, fall back over seconds. Unlike
+            # normalising every chunk, beats and quiet passages stay different, while MPV's volume
+            # still cancels out.
+            self._level = max(float(band_power.sum()), self._level * self._level_decay, self.MIN_LEVEL**2)
+            decibels = 10.0 * np.log10(band_power / self._level + 1e-12) + self._tilt_db
+            levels = np.clip(
+                (decibels - self.DB_FLOOR) / (self.DB_CEIL - self.DB_FLOOR), 0.0, 1.0
+            ).astype(np.float32)
 
-        # 1. Spatial smoothing across neighboring bands (Gaussian 3-tap filter)
-        spatial_bands = np.copy(raw_bands)
-        if self.num_bands >= 3:
-            spatial_bands[1:-1] = (
-                0.22 * raw_bands[:-2] + 0.56 * raw_bands[1:-1] + 0.22 * raw_bands[2:]
-            )
+        self._smooth_bands(levels)
 
-        # 2. Temporal smoothing (asymmetric EMA attack/decay)
-        self._smooth_bands(spatial_bands)
-
-    def _smooth_bands(self, spatial_bands: np.ndarray) -> None:
+    def _smooth_bands(self, new_bands: np.ndarray) -> None:
         """Apply attack, decay, and peak falloff to all bands at once."""
         with self._lock:
-            attack = spatial_bands > self.bands
+            attack = new_bands > self.bands
             self.bands = np.where(
                 attack,
-                self.bands + 0.65 * (spatial_bands - self.bands),
-                self.bands * 0.88,
+                self.bands + self.ATTACK * (new_bands - self.bands),
+                self.bands * self.DECAY,
             ).astype(np.float32, copy=False)
             self.peaks = np.where(
                 self.bands >= self.peaks,
                 self.bands,
-                np.maximum(0.0, self.peaks - 0.02),
+                np.maximum(0.0, self.peaks - self.PEAK_FALL),
             ).astype(np.float32, copy=False)
+            np.maximum(self._since_read, self.bands, out=self._since_read)
 
     def get_bands(self, num_output_bands: Optional[int] = None) -> Tuple[List[float], List[float]]:
         with self._lock:
-            if num_output_bands is None or num_output_bands == self.num_bands:
-                return self.bands.tolist(), self.peaks.tolist()
-
+            bands = np.maximum(self.bands, self._since_read)
+            self._since_read = self.bands.copy()
+            peaks = self.peaks
             n = num_output_bands
+            if n is None or n == self.num_bands:
+                return bands.tolist(), peaks.tolist()
             if n <= 0:
                 return [], []
-            indices = np.minimum(
-                self.num_bands - 1,
-                np.arange(n, dtype=np.intp) * self.num_bands // n,
-            )
-            return self.bands[indices].tolist(), self.peaks[indices].tolist()
+            return self._resample(bands, n).tolist(), self._resample(peaks, n).tolist()
+
+    def _resample(self, values: np.ndarray, n: int) -> np.ndarray:
+        """Stretch by linear interpolation, or squeeze by keeping each group's maximum."""
+        if n >= self.num_bands:
+            return np.interp(np.linspace(0.0, self.num_bands - 1, n), np.arange(self.num_bands), values)
+        starts = np.linspace(0, self.num_bands, n, endpoint=False).astype(np.intp)
+        return np.maximum.reduceat(values, starts)
