@@ -37,6 +37,9 @@
   `dbus-fast` bundles correctly and the binary registers on the session bus.
 - [x] Made shuffle a reversible toggle instead of a destructive reorder; MPRIS exposes it as `Shuffle`.
   - Commit: `fc702fe feat: make shuffle a reversible toggle`
+- [x] Rewrote the audio visualizer from scratch and fixed its root cause: `pw-record` without `--raw`
+  emits an AU header and big-endian samples, which were decoded as little-endian PCM (byte-swapped
+  noise that drew a rising diagonal). Verified end to end with synthetic audio played through PipeWire.
 
 ## Notes
 
