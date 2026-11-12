@@ -32,9 +32,14 @@
   - In-app D-Bus service (`dbus-fast`), since mpv has no built-in MPRIS and MPF owns the queue.
   - Publishes the cached local thumbnail as `file://` art; remote art did not show on the lock screen.
   - Commits: `e4dec48 feat: add MPRIS support for lock screen and media keys`, `734b44d fix: use local thumbnail for MPRIS art`
+- [x] Fixed the render-signature test, which depended on the user's saved visualizer style.
+- [x] Added `mpf_core.mpris` to the AppImage build and smoke-tested the frozen binary:
+  `dbus-fast` bundles correctly and the binary registers on the session bus.
 
 ## Notes
 
 - The AppImage bundles MPF and Python dependencies but continues to require `mpv` as a Linux system dependency.
 - Project documentation reflects the current TUI, controls, packaging, and
   development workflow.
+- MPRIS reports `Shuffle` as off and read-only. `s` reorders the queue in place and keeps no
+  original order, so exposing a real shuffle mode would mean making it a toggle first.
