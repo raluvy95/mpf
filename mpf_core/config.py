@@ -24,9 +24,15 @@ DEFAULT_YTDL_FALLBACK_CLIENTS = ("tv_simply", "mweb")
 _CLIENT_NAME = re.compile(r"[A-Za-z0-9_]+")  # ends up inside an mpv option string: no commas or '='
 
 
+MAX_CONFIG_BYTES = 1024 * 1024
+
+
 def _parse_config(config_file: str) -> Any:
     with open(config_file, encoding="utf-8") as file:
-        return json.load(file)
+        text = file.read(MAX_CONFIG_BYTES + 1)
+    if len(text) > MAX_CONFIG_BYTES:
+        raise ValueError(f"configuration is larger than {MAX_CONFIG_BYTES} bytes")
+    return json.loads(text)
 
 
 def _load_config(config_file: str) -> Dict[str, Any]:

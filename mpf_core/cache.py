@@ -10,6 +10,7 @@ Playlist cache format (v2):
 from __future__ import annotations
 
 import fcntl
+import io
 import json
 import logging
 import os
@@ -29,6 +30,12 @@ logger = logging.getLogger(__name__)
 
 # Re-sync cached playlist against upstream once per week (7 days in seconds)
 CACHE_TTL_SECONDS: float = 7 * 24 * 3600
+
+# Hard caps so a crafted or corrupted cache file cannot exhaust memory. Real caches are far smaller:
+# a 10,000-track playlist is about 1 MiB uncompressed.
+MAX_CACHE_FILE_BYTES = 64 * 1024 * 1024
+MAX_CACHE_DECOMPRESSED_BYTES = 64 * 1024 * 1024
+MAX_STATE_FILE_BYTES = 8 * 1024 * 1024
 
 # zstandard compressor / decompressor (level 3 – fast writes, good ratio)
 _ZCTX = zstd.ZstdCompressor(level=3)
@@ -50,18 +57,50 @@ def _cache_lock(cache_file: str, exclusive: bool) -> Iterator[None]:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
+def _read_limited(path: str, limit: int) -> bytes:
+    """Read a file, refusing anything larger than ``limit`` bytes."""
+    with open(path, "rb") as fh:
+        data = fh.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f"{os.path.basename(path)} is larger than {limit} bytes")
+    return data
+
+
+def _decompress_limited(compressed: bytes, limit: Optional[int] = None) -> bytes:
+    """Decompress a zstd frame, refusing output larger than ``limit`` bytes.
+
+    ``ZstdDecompressor.decompress(max_output_size=...)`` is ignored when the frame header states a
+    content size, so a tiny file could still expand to gigabytes; a bounded stream read cannot.
+    """
+    limit = MAX_CACHE_DECOMPRESSED_BYTES if limit is None else limit
+    chunks: List[bytes] = []
+    total = 0
+    with _DCTX.stream_reader(io.BytesIO(compressed)) as reader:
+        while True:
+            chunk = reader.read(min(1 << 20, limit + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise ValueError(f"cache expands to more than {limit} bytes")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _load_json_limited(path: str) -> Any:
+    return json.loads(_read_limited(path, MAX_STATE_FILE_BYTES).decode("utf-8"))
+
+
 def _read_binary_cache_unlocked(cache_file: str) -> Optional[Dict[str, Any]]:
     if not os.path.exists(cache_file):
         return None
     try:
-        with open(cache_file, "rb") as fh:
-            compressed = fh.read()
-        raw = _DCTX.decompress(compressed)
+        raw = _decompress_limited(_read_limited(cache_file, MAX_CACHE_FILE_BYTES))
         data = msgpack.unpackb(raw, raw=False)
         if not isinstance(data, dict):
             raise ValueError("cache root is not a mapping")
         return data
-    except (OSError, ValueError, TypeError, msgpack.exceptions.UnpackException, zstd.ZstdError) as err:
+    except (OSError, ValueError, TypeError, MemoryError, msgpack.exceptions.UnpackException, zstd.ZstdError) as err:
         logger.warning("Ignoring corrupt playlist cache %s: %s", cache_file, err)
         return None
 
@@ -196,14 +235,13 @@ def load_playback_state(url: str, cache_file: str = PLAYBACK_CACHE_FILE) -> Opti
         return None
     try:
         with _cache_lock(cache_file, exclusive=False):
-            with open(cache_file, "r", encoding="utf-8") as f:
-                cache = json.load(f)
+            cache = _load_json_limited(cache_file)
         if not isinstance(cache, dict):
             raise ValueError("cache root is not a mapping")
         entry = cache.get(url)
         if entry:
             return PlaybackState.from_dict(entry)
-    except (OSError, json.JSONDecodeError, TypeError, ValueError) as err:
+    except (OSError, TypeError, ValueError, MemoryError) as err:  # ValueError covers bad JSON and oversize
         logger.warning("Ignoring corrupt playback cache %s: %s", cache_file, err)
     return None
 
@@ -215,13 +253,12 @@ def save_playback_state(state: PlaybackState, cache_file: str = PLAYBACK_CACHE_F
             cache: Dict[str, Any] = {}
             if os.path.exists(cache_file):
                 try:
-                    with open(cache_file, "r", encoding="utf-8") as f:
-                        loaded = json.load(f)
+                    loaded = _load_json_limited(cache_file)
                     if isinstance(loaded, dict):
                         cache = loaded
                     else:
                         logger.warning("Replacing invalid playback cache root in %s", cache_file)
-                except (OSError, json.JSONDecodeError) as err:
+                except (OSError, ValueError) as err:  # includes oversized files: replace them
                     logger.warning("Replacing corrupt playback cache %s: %s", cache_file, err)
 
             state_dict = state.to_dict()

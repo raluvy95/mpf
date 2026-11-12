@@ -1037,3 +1037,64 @@ class TestHardening(unittest.TestCase):
                     previewer._download(track)
             self.assertEqual(len(os.listdir("/proc/self/fd")), before)
             self.assertEqual([name for name in os.listdir(directory) if name.startswith(".thumb-")], [])
+
+
+class TestCacheSizeLimits(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = self._tmp.name
+
+    def _write(self, name, data):
+        path = os.path.join(self.dir, name)
+        with open(path, "wb") as file:
+            file.write(data)
+        return path
+
+    def test_a_tiny_file_that_expands_hugely_is_rejected(self):
+        import zstandard
+
+        from mpf_core import cache
+
+        bomb = zstandard.ZstdCompressor().compress(b"\0" * (8 * 1024 * 1024))  # a few KB on disk
+        self.assertLess(len(bomb), 4096)
+        path = self._write("playlists.mpk.zst", bomb)
+        # max_output_size would NOT help here: python-zstandard ignores it when the frame states its size.
+        with patch.object(cache, "MAX_CACHE_DECOMPRESSED_BYTES", 1024 * 1024):
+            self.assertIsNone(cache._read_binary_cache(path))
+            with self.assertRaises(ValueError):
+                cache._decompress_limited(bomb)
+
+    def test_normal_caches_still_round_trip(self):
+        from mpf_core import cache
+
+        path = os.path.join(self.dir, "playlists.mpk.zst")
+        tracks = [Track(f"id{i}", f"Title {i}", 100, "Up") for i in range(2000)]
+        self.assertTrue(cache.save_cached_playlist("https://youtu.be/x", tracks, path))
+        loaded = cache.load_cached_playlist("https://youtu.be/x", path)
+        self.assertEqual(len(loaded or []), 2000)
+
+    def test_oversized_cache_file_is_ignored_without_reading_it_all(self):
+        from mpf_core import cache
+
+        path = self._write("playlists.mpk.zst", b"x" * 4096)
+        with patch.object(cache, "MAX_CACHE_FILE_BYTES", 1024):
+            self.assertIsNone(cache._read_binary_cache(path))
+
+    def test_oversized_playback_state_is_ignored_and_then_replaced(self):
+        from mpf_core import cache
+        from mpf_core.cache import PlaybackState
+
+        path = self._write("playback.json", b'{"pad": "' + b"x" * 4096 + b'"}')
+        with patch.object(cache, "MAX_STATE_FILE_BYTES", 1024):
+            self.assertIsNone(cache.load_playback_state("https://youtu.be/x", path))
+            state = PlaybackState(playlist_url="https://youtu.be/x", track_id="a", track_index=0, time_pos=1.0)
+            self.assertTrue(cache.save_playback_state(state, path))  # replaces instead of failing forever
+            self.assertIsNotNone(cache.load_playback_state("https://youtu.be/x", path))
+
+    def test_oversized_config_is_ignored(self):
+        from mpf_core import config
+
+        path = self._write("config.json", b'{"vim_mode": false, "pad": "' + b"x" * 4096 + b'"}')
+        with patch.object(config, "MAX_CONFIG_BYTES", 1024):
+            self.assertTrue(config.load_vim_mode(path))  # default, not the file's false
