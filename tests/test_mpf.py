@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -32,6 +33,7 @@ from mpf_core.config import (
     save_vim_mode,
     save_visualizer_preferences,
 )
+from mpf_core.fetcher import PlaylistFetchError
 
 
 class TestFormatTime(unittest.TestCase):
@@ -440,8 +442,9 @@ class TestSpectrumAnalyzer(unittest.TestCase):
 
 
 class TestPlaylistFetcher(unittest.TestCase):
+    @patch("mpf_core.fetcher.shutil.which", return_value=None)  # no system yt-dlp: use the module
     @patch("yt_dlp.YoutubeDL")
-    def test_fetch_playlist_success(self, mock_ydl_cls):
+    def test_fetch_playlist_success(self, mock_ydl_cls, _which):
         mock_ydl_inst = MagicMock()
         mock_ydl_cls.return_value.__enter__.return_value = mock_ydl_inst
         mock_ydl_inst.extract_info.return_value = {
@@ -469,6 +472,73 @@ class TestPlaylistFetcher(unittest.TestCase):
         self.assertEqual(len(tracks), 2)
         self.assertEqual(tracks[0].id, "vid1")
         self.assertEqual(tracks[0].thumbnail, "https://i.ytimg.com/vi/vid1/hqdefault.jpg")
+
+    PLAYLIST = "https://www.youtube.com/playlist?list=test"
+
+    @staticmethod
+    def _completed(stdout="", stderr="", returncode=0):
+        return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
+
+    def test_system_yt_dlp_is_preferred_and_parsed_like_the_module(self):
+        info = {"entries": [{"id": "v1", "title": "One", "duration": 61, "channel": "Ch"}, {"id": "v2"}]}
+        with (
+            patch("mpf_core.fetcher.shutil.which", return_value="/usr/bin/yt-dlp"),
+            patch("mpf_core.fetcher.subprocess.run", return_value=self._completed(json.dumps(info))) as run,
+            patch.dict("sys.modules", {"yt_dlp": None}),  # the module must not even be needed
+        ):
+            tracks = fetch_playlist_tracks(self.PLAYLIST)
+        self.assertEqual([(t.id, t.title, t.duration, t.uploader) for t in tracks], [("v1", "One", 61.0, "Ch")])
+        command = run.call_args.args[0]
+        self.assertEqual(command[:4], ["/usr/bin/yt-dlp", "-J", "--flat-playlist", "--no-warnings"])
+        self.assertEqual(command[-2:], ["--", self.PLAYLIST])
+
+    def test_system_yt_dlp_failure_reports_its_last_error_line(self):
+        failed = self._completed(stderr="WARNING: x\nERROR: [youtube:tab] Private playlist\n", returncode=1)
+        with (
+            patch("mpf_core.fetcher.shutil.which", return_value="/usr/bin/yt-dlp"),
+            patch("mpf_core.fetcher.subprocess.run", return_value=failed),
+        ):
+            with self.assertRaisesRegex(PlaylistFetchError, "Private playlist"):
+                fetch_playlist_tracks(self.PLAYLIST)
+
+    def test_unreadable_or_timed_out_system_yt_dlp_is_a_fetch_error(self):
+        with patch("mpf_core.fetcher.shutil.which", return_value="/usr/bin/yt-dlp"):
+            with patch("mpf_core.fetcher.subprocess.run", return_value=self._completed("not json")):
+                with self.assertRaisesRegex(PlaylistFetchError, "unreadable"):
+                    fetch_playlist_tracks(self.PLAYLIST)
+            timeout = subprocess.TimeoutExpired("yt-dlp", 1)
+            with patch("mpf_core.fetcher.subprocess.run", side_effect=timeout):
+                with self.assertRaisesRegex(PlaylistFetchError, "timed out"):
+                    fetch_playlist_tracks(self.PLAYLIST)
+
+    def test_without_any_yt_dlp_the_error_says_how_to_install_it(self):
+        with (
+            patch("mpf_core.fetcher.shutil.which", return_value=None),
+            patch.dict("sys.modules", {"yt_dlp": None}),
+        ):
+            with self.assertRaisesRegex(PlaylistFetchError, "install"):
+                fetch_playlist_tracks(self.PLAYLIST)
+
+    def test_custom_options_use_the_module_even_with_a_system_yt_dlp(self):
+        with (
+            patch("mpf_core.fetcher.shutil.which", return_value="/usr/bin/yt-dlp"),
+            patch("mpf_core.fetcher.subprocess.run") as run,
+            patch("yt_dlp.YoutubeDL") as ydl,
+        ):
+            ydl.return_value.__enter__.return_value.extract_info.return_value = {"id": "v", "title": "T"}
+            fetch_playlist_tracks(self.PLAYLIST, {"proxy": "x"})
+        run.assert_not_called()
+
+    def test_frozen_app_restores_the_host_library_path_for_the_system_tool(self):
+        from mpf_core.fetcher import _host_environment
+
+        env = {"LD_LIBRARY_PATH": "/tmp/_MEI/lib", "LD_LIBRARY_PATH_ORIG": "/usr/lib"}
+        with patch.dict(os.environ, env, clear=True), patch.object(sys, "frozen", True, create=True):
+            self.assertEqual(_host_environment()["LD_LIBRARY_PATH"], "/usr/lib")
+        with patch.dict(os.environ, {"LD_LIBRARY_PATH": "/tmp/_MEI/lib"}, clear=True), patch.object(
+            sys, "frozen", True, create=True
+        ):
+            self.assertNotIn("LD_LIBRARY_PATH", _host_environment())
 
 
 class TestCLIArgs(unittest.TestCase):

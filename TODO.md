@@ -46,9 +46,13 @@
   - A failed track is retried with yt-dlp's default again, then with the configurable
     `ytdl_fallback_clients`, before it is skipped; mpv's real error text is shown and logged.
   - Measured: HTTP 403 from YouTube's media server was intermittent; a fresh URL recovered it.
+- [x] Playlists are listed with the system `yt-dlp` executable (the one mpv plays with); the `yt_dlp`
+  module is only a fallback, and the AppImage no longer bundles it.
+  - Verified: identical tracks from both paths (430-track playlist), and a frozen build without
+    `yt_dlp` fetched and cached a playlist.
 
 ## Notes
 
-- The AppImage bundles MPF and Python dependencies but continues to require `mpv` as a Linux system dependency.
+- The AppImage bundles MPF and its Python dependencies but requires `mpv` and `yt-dlp` as Linux system dependencies.
 - Project documentation reflects the current TUI, controls, packaging, and
   development workflow.

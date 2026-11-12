@@ -37,6 +37,7 @@ mkdir -p "$(dirname "${OUTPUT}")"
     --hidden-import mpf_core.player \
     --hidden-import mpf_core.previewer \
     --hidden-import mpf_core.visualizer \
+    --exclude-module yt_dlp \
     "${ROOT_DIR}/mpf.py"
 
 cp -a "${BUILD_DIR}/pyinstaller-dist/mpf/." "${APP_DIR}/usr/bin/"

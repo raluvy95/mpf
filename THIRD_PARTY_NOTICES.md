@@ -6,7 +6,7 @@ MPF relies on the following third-party projects when installed from source:
 - [msgpack-python](https://github.com/msgpack/msgpack-python)
 - [NumPy](https://numpy.org/)
 - [python-mpv-jsonipc](https://github.com/iwalton3/python-mpv-jsonipc)
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) (a system dependency; not bundled in the AppImage)
 - [zstandard](https://github.com/indygreg/python-zstandard)
 
 Development and AppImage builds additionally use PyInstaller, pytest, Ruff,

@@ -28,6 +28,9 @@ some icons may show up as empty boxes.
 - Linux
 - Python 3.14 for source installations
 - `mpv` installed and available on `PATH`
+- `yt-dlp` installed and available on `PATH`. mpv needs it to play YouTube anyway, and MPF uses
+  the same one to list playlists, so keep it up to date. Source installations also fall back
+  to the `yt-dlp` Python package from `requirements.txt` when there is no executable.
 - A public `youtube.com` or `youtu.be` playlist or video URL
 
 Optional extras:
@@ -54,7 +57,8 @@ open a different one.
 CI builds an AppImage for every push. Non-release builds are available as
 temporary workflow artifacts. Release tags such as `v1.0.0` create a GitHub
 Release with the versioned AppImage attached and notes generated from commits
-since the previous release.
+since the previous release. The AppImage does not bundle `yt-dlp`: like `mpv`, it uses
+the one installed on your system, so YouTube fixes arrive with your normal updates.
 
 To build locally on Linux, install `appimagetool`, create the development
 environment above, then run:

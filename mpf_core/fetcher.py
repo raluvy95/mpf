@@ -1,8 +1,13 @@
-"""YouTube metadata and playlist extractor using yt_dlp."""
+"""YouTube metadata and playlist extractor using the system yt-dlp, or the yt_dlp module as a fallback."""
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import shutil
+import subprocess
+import sys
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -45,13 +50,53 @@ def validate_media_url(url: str) -> str:
     return value
 
 
-def fetch_playlist_tracks(url: str, ydl_opts: Optional[Dict[str, Any]] = None) -> List[Track]:
-    """Extract tracks from YouTube playlist or single video URL using yt_dlp."""
+YTDLP_TIMEOUT_SECONDS = 300  # large playlists take a while to list
+
+
+def _host_environment() -> Dict[str, str]:
+    """Environment for host programs: inside a PyInstaller app, undo its library path override."""
+    env = dict(os.environ)
+    if getattr(sys, "frozen", False):
+        host_path = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        if host_path is None:
+            env.pop("LD_LIBRARY_PATH", None)
+        else:
+            env["LD_LIBRARY_PATH"] = host_path
+    return env
+
+
+def _extract_info_with_executable(executable: str, url: str) -> Any:
+    """List a playlist with the system yt-dlp, the same one mpv uses to play it, so it stays current."""
+    try:
+        result = subprocess.run(
+            [executable, "-J", "--flat-playlist", "--no-warnings", "--", url],
+            capture_output=True,
+            text=True,
+            timeout=YTDLP_TIMEOUT_SECONDS,
+            env=_host_environment(),
+            check=False,
+        )
+    except subprocess.TimeoutExpired as err:
+        raise PlaylistFetchError(f"yt-dlp timed out after {YTDLP_TIMEOUT_SECONDS}s") from err
+    if result.returncode != 0:
+        lines = [line for line in result.stderr.strip().splitlines() if line.strip()]
+        raise PlaylistFetchError(f"Unable to retrieve URL: {lines[-1] if lines else 'yt-dlp failed'}")
+    try:
+        return json.loads(result.stdout)
+    except ValueError as err:
+        raise PlaylistFetchError(f"yt-dlp returned unreadable output: {err}") from err
+
+
+def _extract_info_with_module(url: str, ydl_opts: Optional[Dict[str, Any]]) -> Any:
     # Imported here, not at module level: yt_dlp takes ~300 ms to import, which launches that
     # load a fresh playlist cache (and --help/--version) never need.
-    import yt_dlp
+    try:
+        import yt_dlp
+    except ImportError as err:
+        raise PlaylistFetchError(
+            "yt-dlp was not found; install it (e.g. `pip install -U yt-dlp` or your package manager)"
+        ) from err
 
-    url = validate_media_url(url)
     opts: Dict[str, Any] = {
         "extract_flat": True,
         "skip_download": True,
@@ -60,14 +105,29 @@ def fetch_playlist_tracks(url: str, ydl_opts: Optional[Dict[str, Any]] = None) -
     }
     if ydl_opts:
         opts.update(ydl_opts)
-
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            return ydl.extract_info(url, download=False)
     except yt_dlp.utils.DownloadError as err:
         raise PlaylistFetchError(f"Unable to retrieve URL: {err}") from err
     except OSError as err:
         raise PlaylistFetchError(f"Network error while retrieving URL: {err}") from err
+
+
+def fetch_playlist_tracks(url: str, ydl_opts: Optional[Dict[str, Any]] = None) -> List[Track]:
+    """Extract tracks from a YouTube playlist or single video URL.
+
+    Prefers the ``yt-dlp`` executable on PATH (always as current as the user keeps it, and the very
+    one mpv plays with); falls back to the bundled/installed ``yt_dlp`` module when there is none, or
+    when custom ``ydl_opts`` need the module API.
+    """
+    url = validate_media_url(url)
+    executable = None if ydl_opts else shutil.which("yt-dlp")
+    info = (
+        _extract_info_with_executable(executable, url)
+        if executable
+        else _extract_info_with_module(url, ydl_opts)
+    )
 
     if not info:
         raise PlaylistFetchError("The URL returned no media information")
