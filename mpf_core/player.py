@@ -471,8 +471,16 @@ class BlessedMusicPlayer:
             self.queue.repeat_mode
         ]
 
+    def mpris_art_path(self) -> str:
+        """Local thumbnail of the current track, or "" until it has downloaded."""
+        track = self.queue.current_track
+        if not track:
+            return ""
+        path = self.previewer._thumbnail_path(track)
+        return path if os.path.exists(path) and os.path.getsize(path) > 0 else ""
+
     def mpris_metadata(self) -> Dict[str, Any]:
-        return build_metadata(self.queue.current_track, self._duration)
+        return build_metadata(self.queue.current_track, self._duration, self.mpris_art_path())
 
     def _shuffle_queue(self) -> None:
         self.queue.shuffle()

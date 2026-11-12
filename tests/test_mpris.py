@@ -19,6 +19,11 @@ class TestMpris(unittest.TestCase):
         self.assertEqual(build_metadata(Track("a", "S", 90), 120.0)["mpris:length"].value, 120_000_000)
         self.assertEqual(build_metadata(None, 0)["mpris:trackid"].value, NO_TRACK)
 
+    def test_art_prefers_local_file(self):
+        track = Track("a", "S", 10)
+        self.assertEqual(build_metadata(track, 0)["mpris:artUrl"].value, track.thumbnail)
+        self.assertEqual(build_metadata(track, 0, "/tmp/a b.jpg")["mpris:artUrl"].value, "file:///tmp/a%20b.jpg")
+
     def test_loop_status_round_trip(self):
         player = BlessedMusicPlayer(auto_play=False)
         for status in ("None", "Playlist", "Track"):

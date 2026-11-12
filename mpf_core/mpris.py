@@ -5,6 +5,7 @@
 
 import logging
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from dbus_fast import NameFlag, RequestNameReply, Variant
@@ -184,15 +185,18 @@ class _Player(ServiceInterface):
         return True
 
 
-def build_metadata(track: Any, duration: float) -> Dict[str, Variant]:
-    """MPRIS ``Metadata`` for a track; ``duration`` falls back to the track's own."""
+def build_metadata(track: Any, duration: float, art_path: str = "") -> Dict[str, Variant]:
+    """MPRIS ``Metadata`` for a track; ``duration`` falls back to the track's own.
+
+    ``art_path`` is a local thumbnail; shells like the lock screen often cannot load remote art.
+    """
     if track is None:
         return {"mpris:trackid": Variant("o", NO_TRACK)}
     meta: Dict[str, Variant] = {
         "mpris:trackid": Variant("o", _track_path(track.id)),
         "xesam:title": Variant("s", track.title),
         "xesam:url": Variant("s", track.url),
-        "mpris:artUrl": Variant("s", track.thumbnail),
+        "mpris:artUrl": Variant("s", Path(art_path).as_uri() if art_path else track.thumbnail),
     }
     if track.uploader:
         meta["xesam:artist"] = Variant("as", [track.uploader])
@@ -240,7 +244,7 @@ class MprisService:
                 "PlaybackStatus": p.mpris_playback_status(),
                 "LoopStatus": p.mpris_loop_status(),
                 "Volume": p._volume / 100,
-                "Metadata": (p.queue.current_track.id if p.queue.current_track else None, round(p._duration)),
+                "Metadata": (p.queue.current_track.id if p.queue.current_track else None, round(p._duration), bool(p.mpris_art_path())),
                 "CanGoNext": bool(p.queue.tracks),
                 "CanGoPrevious": bool(p.queue.tracks),
                 "CanPlay": p.queue.current_track is not None,
