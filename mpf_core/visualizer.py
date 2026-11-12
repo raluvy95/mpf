@@ -17,19 +17,24 @@ logger = logging.getLogger(__name__)
 class PipeWireSpectrumAnalyzer:
     """Captures audio stream specifically from MPV and computes live frequency bands using numpy."""
 
-    SAMPLE_RATE = 22050
-    CHUNK_SIZE = 512  # samples consumed per analysis step (~23 ms)
-    FFT_SIZE = 1024  # sliding analysis window (~46 ms): short enough to stay on the beat
-    MIN_FREQ = 40.0
-    MAX_FREQ = 10_000.0
-    DB_FLOOR = -45.0  # band energy relative to the recent loudness that maps to an empty bar
+    SAMPLE_RATE = 44100  # full audible range: 20 kHz needs a 40 kHz+ rate
+    CHUNK_SIZE = 1024  # samples consumed per analysis step (~23 ms)
+    FFT_SIZE = 2048  # sliding analysis window (~46 ms): 21.5 Hz bins, still short enough to stay on the beat
+    MIN_FREQ = 20.0
+    MAX_FREQ = 20_000.0
+    DB_FLOOR = -42.0  # band energy relative to the recent loudness that maps to an empty bar
     DB_CEIL = -6.0  # ... and to a full bar
-    TILT_DB_PER_OCTAVE = 0.5  # lift highs slightly; band energy on log-spaced bands is already pink-flat
+    # Perceptual weighting around 1 kHz. Summing energy over log-spaced bands already cancels 3 dB/oct,
+    # so the usual 4.5 dB/oct analyzer slope on spectral density (music falls faster than pink noise)
+    # is 4.5 - 3 = 1.5 dB/oct here: typical music reads level while kicks and hats stand out of it.
+    TILT_DB_PER_OCTAVE = 1.5
     AGC_RELEASE_SECONDS = 3.0  # how slowly the reference level follows quieter music
     MIN_LEVEL = 3e-5  # reference level floor (about -90 dBFS), so near-silence still shows
     ATTACK = 0.8  # fraction of the way to a louder value covered per step
     DECAY = 0.9  # per-step multiplier when a band falls
     PEAK_FALL = 0.02
+    NARROW_BAND_BINS = 6.0  # bands narrower than this (in FFT bins) average power over a few steps
+    MIN_BAND_BLEND = 0.3  # per-step weight of the newest power in the narrowest bands
 
     def __init__(self, num_bands: int = 32, target_node: str = "mpv") -> None:
         self.num_bands = num_bands
@@ -61,6 +66,11 @@ class PipeWireSpectrumAnalyzer:
         self._cum_axis = np.arange(self.FFT_SIZE // 2 + 2, dtype=np.float64)
         centres = np.sqrt(edges_hz[:-1] * edges_hz[1:])
         self._tilt_db = (self.TILT_DB_PER_OCTAVE * np.log2(centres / 1000.0)).astype(np.float32)
+        # Few bins per bass band means a noisy power estimate that flutters from step to step. Average
+        # power (before the dB conversion) in proportion to how narrow each band is; wide bands stay instant.
+        width_bins = np.diff(self._edge_bins)
+        self._blend = np.clip(width_bins / self.NARROW_BAND_BINS, self.MIN_BAND_BLEND, 1.0)
+        self._avg_power = np.zeros(num_bands, dtype=np.float64)
 
     def start(self) -> None:
         if self._running:
@@ -196,10 +206,13 @@ class PipeWireSpectrumAnalyzer:
             levels = np.zeros(self.num_bands, dtype=np.float32)
             self._level = max(self._level * self._level_decay, self.MIN_LEVEL**2)
         else:
-            power = np.abs(np.fft.rfft(buf * self._window)) ** 2 * self._power_scale
+            # Drop the window's DC offset first: Hann leakage would otherwise paint it into the 20-30 Hz bars.
+            power = np.abs(np.fft.rfft((buf - buf.mean()) * self._window)) ** 2 * self._power_scale
             cumulative = np.concatenate(([0.0], np.cumsum(power, dtype=np.float64)))
             at_edges = np.interp(self._edge_bins, self._cum_axis, cumulative)
             band_power = np.maximum(np.diff(at_edges), 0.0)
+            self._avg_power += self._blend * (band_power - self._avg_power)
+            band_power = self._avg_power
 
             # Slow AGC on the energy the bars can actually show (DC and sub-bass would otherwise
             # swamp it): jump up to a louder level at once, fall back over seconds. Unlike
