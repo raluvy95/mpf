@@ -1081,8 +1081,30 @@ class BlessedMusicPlayer:
 
     def _keycap(self, key: str, color: str = "cyan") -> str:
         """A key drawn as its own box: dim brackets around a bold coloured key, e.g. [Space] or [n]."""
+        return self._paint(self._keycap_segments(key, color))
+
+    def _keycap_segments(self, key: str, color: str = "cyan") -> List[Tuple[Any, str]]:
         term = self.term
-        return term.dim("[") + getattr(term, f"bold_{color}")(key) + term.dim("]")
+        return [(term.dim, "["), (getattr(term, f"bold_{color}"), key), (term.dim, "]")]
+
+    @staticmethod
+    def _paint(segments: List[Tuple[Any, str]], limit: Optional[int] = None) -> str:
+        """Join (style, text) segments, cutting to ``limit`` visible characters *before* styling.
+
+        blessed's Terminal.truncate() must not be used on styled text: it collapses the line into
+        its first style and drops every later colour. Cutting the plain text first keeps each
+        segment's own style, and never leaves half an escape sequence.
+        """
+        out: List[str] = []
+        for style, text in segments:
+            if limit is not None:
+                text = text[: max(0, limit)]
+                limit -= len(text)
+            if text:
+                out.append(style(text) if style else text)
+            if limit is not None and limit <= 0:
+                break
+        return "".join(out)
 
     HELP_COLORS = {"Playback": "cyan", "Library": "green", "Display": "magenta", "General": "yellow"}
 
@@ -1134,8 +1156,8 @@ class BlessedMusicPlayer:
             ),
         ]
 
-    def _help_lines(self) -> List[str]:
-        """Styled help screen lines.
+    def _help_lines(self, width: Optional[int] = None) -> List[str]:
+        """Styled help screen lines, each cut to ``width`` visible characters when given.
 
         Keys sit in boxes, each section has its own colour for its title and keys, and descriptions
         share one aligned column.
@@ -1147,26 +1169,34 @@ class BlessedMusicPlayer:
             return sum(len(key) + 2 for key in keys) + len(keys) - 1  # "[k]" per key, one space between
 
         column = max(plain_width(keys) for _title, rows in sections for keys, _desc, _note in rows)
-        lines = [" " + term.bold_white_on_blue(" MPF HELP ") + term.dim("  press ") + self._keycap("?", "white") + term.dim(" to close")]
+        rows_out: List[List[Tuple[Any, str]]] = [
+            [(None, " "), (term.bold_white_on_blue, " MPF HELP "), (term.dim, "  press ")]
+            + self._keycap_segments("?", "white")
+            + [(term.dim, " to close")]
+        ]
         for title, rows in sections:
             color = self.HELP_COLORS.get(title, "cyan")
-            lines.append("")
-            lines.append(" " + getattr(term, f"bold_{color}")(title) + " " + term.dim("─" * max(0, 12 - len(title))))
+            rows_out.append([])
+            rows_out.append(
+                [(None, " "), (getattr(term, f"bold_{color}"), title), (None, " "), (term.dim, "─" * max(0, 12 - len(title)))]
+            )
             for keys, description, note in rows:
-                caps = " ".join(self._keycap(key, color) for key in keys)
-                text = term.white(description)
+                line: List[Tuple[Any, str]] = [(None, "   ")]
+                for index, key in enumerate(keys):
+                    line += ([(None, " ")] if index else []) + self._keycap_segments(key, color)
+                line += [(None, " " * (column - plain_width(keys) + 2)), (term.white, description)]
                 if note:
-                    text += term.dim(" (now ") + getattr(term, f"bold_{note[1]}")(note[0]) + term.dim(")")
-                lines.append("   " + caps + " " * (column - plain_width(keys) + 2) + text)
-        return lines
+                    line += [(term.dim, " (now "), (getattr(term, f"bold_{note[1]}"), note[0]), (term.dim, ")")]
+                rows_out.append(line)
+        return [self._paint(segments, width) for segments in rows_out]
 
     def _render_help(self) -> None:
         """Render a compact keyboard reference without leaving the player."""
         term = self.term
         width = max(0, term.width - 3)
         output = [term.clear + term.home]
-        for row, line in enumerate(self._help_lines()[: term.height]):
-            output.append(self._move(2, row) + term.truncate(line, width) + term.clear_eol)
+        for row, line in enumerate(self._help_lines(width)[: term.height]):
+            output.append(self._move(2, row) + line + term.clear_eol)
         print("".join(output), end="", flush=True)
 
     @staticmethod

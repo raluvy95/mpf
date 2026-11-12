@@ -823,6 +823,58 @@ class TestRenderOutput(unittest.TestCase):
         self.assertIn(term.bold_white_on_blue(" MPF HELP "), lines[0])
         self.assertIn(term.dim("["), lines[0])  # the "[?]" close hint is boxed like every key
 
+    def _help_output(self, player, width=100, vim=True):
+        player._vim_mode = vim
+        term, width_patch, height_patch = self._styled_term(width)
+        out = io.StringIO()
+        with width_patch, height_patch, redirect_stdout(out):
+            player.term = term
+            player._render_help()
+        return term, out.getvalue()
+
+    def test_printed_help_keeps_every_colour(self):
+        # Regression: blessed's Terminal.truncate() collapsed styled lines into their first style, so the
+        # screen was printed with no colours at all while _help_lines() (checked alone) looked right.
+        term, raw = self._help_output(self._player())
+        for painted in (
+            term.bold_white_on_blue(" MPF HELP "),
+            term.bold_cyan("Space"),
+            term.bold_green("Enter"),
+            term.bold_magenta("v"),
+            term.bold_yellow("q"),
+            term.bold_cyan("Playback"),
+            term.bold_green("Library"),
+            term.bold_magenta("Display"),
+            term.bold_yellow("General"),
+            term.bold_green("on"),
+            term.white("Play or pause"),
+            term.dim("["),
+        ):
+            self.assertIn(painted, raw)
+        _term, off = self._help_output(self._player(), vim=False)
+        self.assertIn(term.bold_red("off"), off)
+
+    def test_printed_help_keeps_colours_when_cut_to_a_narrow_terminal(self):
+        for width in (30, 20, 14):
+            with self.subTest(width=width):
+                term, raw = self._help_output(self._player(), width=width)
+                self.assertIn(term.bold_cyan("Space"), raw)  # the key before the cut keeps its colour
+                self.assertIn(term.bold_green("Enter"), raw)
+                for chunk in raw.split(term.clear_eol)[:-1]:
+                    visible = term.strip_seqs(chunk).replace(term.clear, "").replace(term.home, "")
+                    self.assertLessEqual(len(visible), width - 3)
+                self.assertNotRegex(raw, r"\x1b\[[0-9;]*$")  # no half escape sequence at the end
+
+    def test_paint_cuts_plain_text_before_styling_each_segment(self):
+        player = self._player()
+        term, width_patch, height_patch = self._styled_term()
+        with width_patch, height_patch:
+            player.term = term
+            segments = [(term.dim, "ab"), (term.bold_cyan, "cdef"), (None, "gh")]
+            self.assertEqual(player._paint(segments, 3), term.dim("ab") + term.bold_cyan("c"))
+            self.assertEqual(player._paint(segments), term.dim("ab") + term.bold_cyan("cdef") + "gh")
+            self.assertEqual(player._paint(segments, 0), "")
+
     def test_help_stays_plain_text_without_colour_support(self):
         player = self._player()
         player.term = Terminal(force_styling=False)
@@ -872,6 +924,8 @@ class TestRenderOutput(unittest.TestCase):
                 with width_patch, height_patch, redirect_stdout(out):
                     player.term = term
                     player._render()
+                self.assertIn(term.bold_cyan("Space"), out.getvalue())  # coloured keys, not just boxed text
+                self.assertIn(term.dim("["), out.getvalue())
                 footer = term.strip_seqs(out.getvalue())
                 for hint in expected:
                     self.assertIn(hint, footer)
