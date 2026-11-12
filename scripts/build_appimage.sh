@@ -32,6 +32,7 @@ mkdir -p "$(dirname "${OUTPUT}")"
     --hidden-import mpf_core.fetcher \
     --hidden-import mpf_core.fuzzy \
     --hidden-import mpf_core.models \
+    --hidden-import mpf_core.mpris \
     --hidden-import mpf_core.paths \
     --hidden-import mpf_core.player \
     --hidden-import mpf_core.previewer \
