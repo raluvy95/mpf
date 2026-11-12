@@ -796,6 +796,10 @@ class BlessedMusicPlayer:
                 self._show_help = False
             elif key in ("q", "Q"):
                 self._running = False
+            elif key == "V":
+                # The help lists this key and shows its state, and the movement keys it documents change
+                # with it, so it must work here and the screen must update.
+                self._toggle_vim_mode()
             return
 
         # Player navigation shortcuts
@@ -848,8 +852,7 @@ class BlessedMusicPlayer:
                 self.previewer.clear()
             print(self.term.clear, end="", flush=True)
         elif key == "V":
-            self._vim_mode = not self._vim_mode
-            save_vim_mode(self._vim_mode, self.config_file)
+            self._toggle_vim_mode()
         elif key in ("a", "A"):
             style_index = self.SPECTRUM_STYLES.index(self._spectrum_style)
             self._spectrum_style = self.SPECTRUM_STYLES[(style_index + 1) % len(self.SPECTRUM_STYLES)]
@@ -1078,6 +1081,10 @@ class BlessedMusicPlayer:
             self.previewer.generation,
             animated_frame,
         )
+
+    def _toggle_vim_mode(self) -> None:
+        self._vim_mode = not self._vim_mode
+        save_vim_mode(self._vim_mode, self.config_file)
 
     def _keycap(self, key: str, color: Optional[str] = "cyan") -> str:
         """A key drawn as its own box: dim brackets around a bold coloured key, e.g. [Space] or [n]."""

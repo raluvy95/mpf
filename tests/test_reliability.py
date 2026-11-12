@@ -843,6 +843,33 @@ class TestRenderOutput(unittest.TestCase):
             player._render_help()
         return term, out.getvalue()
 
+    def test_v_toggles_vim_mode_while_the_help_is_open_and_the_screen_updates(self):
+        # Regression: the help listed [V] but the help-mode key handler ignored it.
+        player = self._player()
+        player._vim_mode = False
+        player._show_help = True
+        player._render_requested.clear()
+        with patch("mpf_core.player.save_vim_mode") as save:
+            player._handle_key(Keystroke("V"))
+            self.assertTrue(player._vim_mode)
+            save.assert_called_once_with(True, player.config_file)
+            self.assertTrue(player._render_requested.is_set())  # the screen redraws
+            self.assertTrue(player._show_help)  # and the help stays open
+            player._handle_key(Keystroke("V"))
+            self.assertFalse(player._vim_mode)
+        _term, lines = self._help_plain(player, vim=player._vim_mode)
+        self.assertTrue(any("now off" in line for line in lines))
+
+    def test_other_keys_still_do_nothing_while_the_help_is_open(self):
+        player = self._player()
+        player.mpv = MagicMock()
+        player._show_help = True
+        before = (player._vim_mode, player.queue.current_idx, player._volume, player._is_muted)
+        for key in ("n", "p", "s", "r", "m", "+", " ", "v", "v", "o", "/", "j"):
+            player._handle_key(key)
+        self.assertEqual((player._vim_mode, player.queue.current_idx, player._volume, player._is_muted), before)
+        self.assertTrue(player._show_help)
+
     def test_printed_help_keeps_every_colour(self):
         # Regression: blessed's Terminal.truncate() collapsed styled lines into their first style, so the
         # screen was printed with no colours at all while _help_lines() (checked alone) looked right.
