@@ -28,6 +28,10 @@
   - Result: 83 tests and 9 subtests passed; Ruff and mypy passed.
 - [x] Published current installation, usage, contribution, licensing, release,
   and third-party documentation.
+- [x] Added MPRIS support so the KDE lock screen, media keys, and `playerctl` can show and control MPF.
+  - In-app D-Bus service (`dbus-fast`), since mpv has no built-in MPRIS and MPF owns the queue.
+  - Publishes the cached local thumbnail as `file://` art; remote art did not show on the lock screen.
+  - Commits: `e4dec48 feat: add MPRIS support for lock screen and media keys`, `734b44d fix: use local thumbnail for MPRIS art`
 
 ## Notes
 
