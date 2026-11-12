@@ -27,7 +27,7 @@ def run(track_count: int, frames: int) -> None:
 
     analyzer = PipeWireSpectrumAnalyzer(num_bands=32)
     rng = np.random.default_rng(42)
-    samples = rng.integers(-32768, 32767, size=(frames, analyzer.CHUNK_SIZE), dtype=np.int16)
+    samples = rng.integers(-32768, 32767, size=(frames, analyzer.HOP), dtype=np.int16)
     for frame in samples:
         analyzer._process_samples(frame)
 

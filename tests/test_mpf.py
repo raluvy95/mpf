@@ -430,7 +430,7 @@ class TestSpectrumAnalyzer(unittest.TestCase):
         self.assertFalse(analyzer.enabled)
 
     def test_spectrum_is_independent_of_input_gain(self):
-        phase = np.linspace(0, 2 * np.pi * 24, PipeWireSpectrumAnalyzer.CHUNK_SIZE, endpoint=False)
+        phase = np.linspace(0, 2 * np.pi * 24, PipeWireSpectrumAnalyzer.HOP, endpoint=False)
         quiet = (np.sin(phase) * 1_000).astype(np.int16)
         loud = (np.sin(phase) * 16_000).astype(np.int16)
         quiet_analyzer = PipeWireSpectrumAnalyzer(num_bands=16)
@@ -447,7 +447,7 @@ class TestSpectrumAnalyzer(unittest.TestCase):
         )
 
     def test_spectrum_remains_visible_at_low_output_gain(self):
-        phase = np.linspace(0, 2 * np.pi * 24, PipeWireSpectrumAnalyzer.CHUNK_SIZE, endpoint=False)
+        phase = np.linspace(0, 2 * np.pi * 24, PipeWireSpectrumAnalyzer.HOP, endpoint=False)
         quiet = (np.sin(phase) * 8).astype(np.int16)
         loud = (np.sin(phase) * 16_000).astype(np.int16)
         quiet_analyzer = PipeWireSpectrumAnalyzer(num_bands=16)
