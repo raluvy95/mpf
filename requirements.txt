@@ -3,5 +3,5 @@ dbus-fast>=2,<4
 msgpack>=1.1,<2
 numpy>=2.0,<3
 python-mpv-jsonipc>=1.2,<2
-yt-dlp>=2026.1,<2027
+yt-dlp>=2026.1
 zstandard>=0.25,<1
