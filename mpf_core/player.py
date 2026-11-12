@@ -1079,13 +1079,14 @@ class BlessedMusicPlayer:
             animated_frame,
         )
 
-    def _keycap(self, key: str, color: str = "cyan") -> str:
+    def _keycap(self, key: str, color: Optional[str] = "cyan") -> str:
         """A key drawn as its own box: dim brackets around a bold coloured key, e.g. [Space] or [n]."""
         return self._paint(self._keycap_segments(key, color))
 
-    def _keycap_segments(self, key: str, color: str = "cyan") -> List[Tuple[Any, str]]:
+    def _keycap_segments(self, key: str, color: Optional[str] = "cyan") -> List[Tuple[Any, str]]:
+        """Segments of a keycap; ``color`` None means bold in the terminal's own default colour."""
         term = self.term
-        return [(term.dim, "["), (getattr(term, f"bold_{color}"), key), (term.dim, "]")]
+        return [(term.dim, "["), (getattr(term, f"bold_{color}") if color else term.bold, key), (term.dim, "]")]
 
     @staticmethod
     def _paint(segments: List[Tuple[Any, str]], limit: Optional[int] = None) -> str:
@@ -1170,8 +1171,10 @@ class BlessedMusicPlayer:
 
         column = max(plain_width(keys) for _title, rows in sections for keys, _desc, _note in rows)
         rows_out: List[List[Tuple[Any, str]]] = [
-            [(None, " "), (term.bold_white_on_blue, " MPF HELP "), (term.dim, "  press ")]
-            + self._keycap_segments("?", "white")
+            # Reverse video swaps the terminal's own foreground and background, so the title is
+            # readable on any theme; fixed colour pairs (white on blue) are remapped by themes.
+            [(None, " "), (term.bold_reverse, " MPF HELP "), (term.dim, "  press ")]
+            + self._keycap_segments("?", None)
             + [(term.dim, " to close")]
         ]
         for title, rows in sections:
@@ -1184,7 +1187,7 @@ class BlessedMusicPlayer:
                 line: List[Tuple[Any, str]] = [(None, "   ")]
                 for index, key in enumerate(keys):
                     line += ([(None, " ")] if index else []) + self._keycap_segments(key, color)
-                line += [(None, " " * (column - plain_width(keys) + 2)), (term.white, description)]
+                line += [(None, " " * (column - plain_width(keys) + 2)), (None, description)]  # default text colour
                 if note:
                     line += [(term.dim, " (now "), (getattr(term, f"bold_{note[1]}"), note[0]), (term.dim, ")")]
                 rows_out.append(line)

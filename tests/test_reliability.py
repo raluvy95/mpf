@@ -818,9 +818,20 @@ class TestRenderOutput(unittest.TestCase):
         self.assertIn(term.bold_green("on"), row_on)
         self.assertIn(term.bold_red("off"), row_off)
 
+    def test_help_title_and_text_use_the_terminals_own_colours_for_contrast(self):
+        # Fixed colour pairs (white on blue) can be unreadable once a theme remaps the palette; reverse video
+        # and the default text colour always contrast with whatever the terminal's background is.
+        term, lines = self._help_styled(self._player())
+        self.assertIn(term.bold_reverse(" MPF HELP "), lines[0])
+        raw = "".join(lines)
+        for forced in ("white", "black", "bright_white", "white_on_blue", "bold_white", "bold_white_on_blue"):
+            self.assertNotIn(getattr(term, forced)("x"), raw, forced)
+        row = next(line for line in lines if "Play or pause" in line)
+        self.assertTrue(row.endswith("Play or pause"), repr(row))  # description carries no colour of its own
+
     def test_help_has_a_highlighted_title_bar_and_dim_chrome(self):
         term, lines = self._help_styled(self._player())
-        self.assertIn(term.bold_white_on_blue(" MPF HELP "), lines[0])
+        self.assertIn(term.bold_reverse(" MPF HELP "), lines[0])
         self.assertIn(term.dim("["), lines[0])  # the "[?]" close hint is boxed like every key
 
     def _help_output(self, player, width=100, vim=True):
@@ -837,7 +848,7 @@ class TestRenderOutput(unittest.TestCase):
         # screen was printed with no colours at all while _help_lines() (checked alone) looked right.
         term, raw = self._help_output(self._player())
         for painted in (
-            term.bold_white_on_blue(" MPF HELP "),
+            term.bold_reverse(" MPF HELP "),
             term.bold_cyan("Space"),
             term.bold_green("Enter"),
             term.bold_magenta("v"),
@@ -847,7 +858,6 @@ class TestRenderOutput(unittest.TestCase):
             term.bold_magenta("Display"),
             term.bold_yellow("General"),
             term.bold_green("on"),
-            term.white("Play or pause"),
             term.dim("["),
         ):
             self.assertIn(painted, raw)
