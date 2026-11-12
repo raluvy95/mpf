@@ -13,6 +13,8 @@ from dbus_fast.aio import MessageBus
 from dbus_fast.constants import PropertyAccess
 from dbus_fast.service import ServiceInterface, dbus_property, method, signal
 
+from mpf_core.metadata import parse_track
+
 if TYPE_CHECKING:
     from mpf_core.player import BlessedMusicPlayer
 
@@ -196,14 +198,15 @@ def build_metadata(track: Any, duration: float, art_path: str = "") -> Dict[str,
     """
     if track is None:
         return {"mpris:trackid": Variant("o", NO_TRACK)}
+    artist, title = parse_track(track)  # also cleans the text: nothing hostile may reach D-Bus
     meta: Dict[str, Variant] = {
         "mpris:trackid": Variant("o", _track_path(track.id)),
-        "xesam:title": Variant("s", track.title),
+        "xesam:title": Variant("s", title or track.id),
         "xesam:url": Variant("s", track.url),
         "mpris:artUrl": Variant("s", Path(art_path).as_uri() if art_path else track.thumbnail),
     }
-    if track.uploader:
-        meta["xesam:artist"] = Variant("as", [track.uploader])
+    if artist:
+        meta["xesam:artist"] = Variant("as", [artist])
     length = duration or track.duration or 0
     if length > 0:
         meta["mpris:length"] = Variant("x", int(length * _US))
@@ -261,9 +264,9 @@ class MprisService:
                 changed[name] = p.mpris_metadata() if name == "Metadata" else value
                 if name == "CanPlay":
                     changed["CanPause"] = changed["CanSeek"] = value
-            self._last = current
             if changed:
                 iface.emit_properties_changed(changed)
+            self._last = current  # only after a successful emit, so a failed one is retried next tick
 
             # Position isn't signalled; clients extrapolate. Announce only jumps (seek/track change).
             pos = p._time_pos

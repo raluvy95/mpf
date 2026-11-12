@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from mpf_core.fetcher import fetch_playlist_tracks
-from mpf_core.metadata import clean_text
+from mpf_core.metadata import clean_text, parse_track, strip_noise
 from mpf_core.models import Track
 from mpf_core.player import BlessedMusicPlayer
 
@@ -33,6 +33,51 @@ class TestCleanText(unittest.TestCase):
         for value in (None, 5, b"bytes", ["x"]):
             with self.subTest(value=value):
                 self.assertEqual(clean_text(value), "")
+
+
+class TestParseTrack(unittest.TestCase):
+    def check(self, title, channel, expected):
+        self.assertEqual(parse_track(Track("id", title, 100, channel)), expected)
+
+    def test_artist_dash_title_splits_on_the_first_separator(self):
+        self.check("Halsey - Colors (Audien Remix)", "Halsey", ("Halsey", "Colors (Audien Remix)"))
+        self.check("A - B - C", "Chan", ("A", "B - C"))
+
+    def test_dash_variants_split(self):
+        for dash in ("-", "–", "—", "‒"):
+            with self.subTest(dash=dash):
+                self.check(f"Beyoncé {dash} Halo", "Chan", ("Beyoncé", "Halo"))
+
+    def test_hyphen_without_spaces_is_part_of_a_name(self):
+        self.check("Jay-Z", "Jay-Z", ("Jay-Z", "Jay-Z"))
+        self.check("Hi-Fi Song", "Chan", ("Chan", "Hi-Fi Song"))
+
+    def test_upload_noise_is_removed_but_song_tags_are_kept(self):
+        for noise in ("(Official Video)", "[Official Music Video]", "(Lyrics)", "[HD]", "(Official Audio)",
+                      "(Visualizer)", "(Official Lyric Video)"):
+            with self.subTest(noise=noise):
+                self.check(f"Daft Punk - Get Lucky {noise}", "x", ("Daft Punk", "Get Lucky"))
+        self.check("Artist - Song (Remix)", "x", ("Artist", "Song (Remix)"))
+        self.check("Artist - Song (feat. Someone)", "x", ("Artist", "Song (feat. Someone)"))
+        self.check("Artist - Song (Live)", "x", ("Artist", "Song (Live)"))
+        self.assertEqual(strip_noise("Song [4K]"), "Song")
+
+    def test_topic_channels_name_the_artist(self):
+        self.check("Song Name", "Some Artist - Topic", ("Some Artist", "Song Name"))
+
+    def test_no_separator_falls_back_to_the_channel(self):
+        self.check("Just a title (Official Video)", "SomeChannel", ("SomeChannel", "Just a title"))
+        self.check("Only Title", "", ("", "Only Title"))
+
+    def test_degenerate_input_never_raises_or_returns_empty_titles_for_noise(self):
+        self.check("", "", ("", ""))
+        self.check("(Official Video)", "Ch", ("Ch", "(Official Video)"))
+        self.check("- Title", "Ch", ("Ch", "- Title"))
+        self.assertEqual(parse_track(object()), ("", ""))
+
+    def test_output_is_cleaned(self):
+        artist, title = parse_track(Track("id", f"Ar{OSC52}tist - So\x00ng", 1, "x"))
+        self.assertFalse(set(artist + title) & set("\x1b\x07\x00"))
 
 
 class TestIngestionPoints(unittest.TestCase):
