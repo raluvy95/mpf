@@ -1,13 +1,24 @@
-"""PipeWire spectrum analyzer: log-frequency bars, bass on the left, treble on the right.
+"""PipeWire spectrum analyzer: a numpy port of cava's own algorithm (cavacore, cava 1.0.0).
 
-Pipeline, once per ~23 ms hop:
-  raw s16 PCM -> 2048-sample Hann window -> FFT magnitude (0 dBFS = full-scale sine)
-  -> 32 log-spaced bands, 20 Hz..20 kHz (peak magnitude per band) -> dB
-  -> +4 dB/octave tilt around 1 kHz (music falls 4.5-5.5 dB/oct, so this levels it out)
-  -> slow auto-gain (bars are relative to the recent loudest band, so MPV's volume cancels)
-  -> fast attack, gravity decay.
+It is cava's default look, bar for bar: bass on the left, treble on the right, bars that fill like a
+mountain range and fall with gravity. What is ported, from ``cavacore.c`` (the settings are cava's
+defaults for the PipeWire input; the optional ones are off, as they are by default):
 
-Bands never mix with their neighbours, so every bar rises and falls on its own, vertically.
+* Two Hann-windowed FFTs of the newest samples. At 48 kHz cava uses 4096 samples for mid/treble and
+  8192 for bass (bars under 100 Hz), so low notes get real frequency resolution.
+* Bar layout: bars spread logarithmically over 50 Hz..8 kHz (``lower_cutoff_freq``/``higher_cutoff_freq``),
+  each bar sums the FFT magnitudes inside its bin range; neighbouring bass bars are pushed apart
+  where the log scale would put them on the same bin.
+* Per-bar EQ: ``f ** 0.85`` rising with frequency, divided by log2(FFT size) and the bar's bin count.
+* ``noise_reduction = 0.77``: gravity fall-off (``cava_fall`` / ``cava_peak``) and an integral memory
+  (``cava_mem``). Their constants are scaled by the framerate that cavacore *measures* from the amount
+  of audio per call, so we feed it 800 samples (48000 / 60) per step and it behaves as cava at 60 fps.
+* ``autosens = 1``: sensitivity drops 2% per overshooting step, creeps up 0.1% per step otherwise (10%
+  per step until the first overshoot), and does not grow during digital silence.
+
+Not used, because cava's defaults leave them off: ``monstercat``, ``waves``, the sleep timer and manual
+sensitivity. Input is mono (cava averages its two channels' outputs in mono mode, equivalent for a
+mono mix); samples keep cava's raw integer scale (-32768..32767).
 """
 
 from __future__ import annotations
@@ -23,27 +34,104 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+NOISE_REDUCTION = 0.77  # cava [smoothing] noise_reduction = 77
+LOW_CUT_OFF = 50  # cava [general] lower_cutoff_freq
+HIGH_CUT_OFF = 8000  # cava [general] higher_cutoff_freq (the code default; the sample config says 10000)
+BASS_CUT_OFF = 100  # Hz: bars below this are read from the long bass FFT
+TARGET_FRAMERATE = 60  # cava [general] framerate
+
+
+def fft_sizes(rate: int) -> Tuple[int, int]:
+    """(mid/treble FFT size, bass FFT size) for a sample rate, as in ``cava_init``."""
+    size = 512
+    for limit, factor in ((8125, 1), (16250, 2), (32500, 4), (75000, 8), (150000, 16), (300000, 32)):
+        if rate <= limit:
+            return size * factor, size * factor * 2
+    return size * 64, size * 128
+
+
+def cava_layout(
+    num_bars: int, rate: int, low_cut_off: int = LOW_CUT_OFF, high_cut_off: int = HIGH_CUT_OFF
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+    """Port of the bar layout in ``cava_init``.
+
+    Returns (lower FFT bin, upper FFT bin, eq, cut-off frequency per bar edge, number of bass bars).
+    Float32 arithmetic is kept where the C code uses ``float`` so bin boundaries truncate identically.
+    """
+    fft, bass_fft = fft_sizes(rate)
+    f32 = np.float32
+    lower = np.zeros(num_bars + 1, dtype=np.int64)
+    upper = np.zeros(num_bars + 1, dtype=np.int64)
+    cut = np.zeros(num_bars + 1, dtype=np.float32)
+    relative = np.zeros(num_bars + 1, dtype=np.float32)
+
+    frequency_constant = float(
+        np.log10(f32(low_cut_off) / f32(high_cut_off)) / (f32(1) / (f32(num_bars) + f32(1)) - f32(1))
+    )
+    min_bandwidth = float(rate // bass_fft)
+    bass_cut_off_bar = 0
+    first_bar = 1
+
+    for n in range(num_bars + 1):
+        coefficient = frequency_constant * -1
+        coefficient += float((f32(n) + f32(1)) / (f32(num_bars) + f32(1))) * frequency_constant
+        cut[n] = high_cut_off * 10.0**coefficient
+        if n > 0 and cut[n - 1] >= cut[n]:
+            cut[n] = cut[n - 1] + min_bandwidth
+        relative[n] = f32(cut[n]) / f32(rate // 2)
+
+        if cut[n] < BASS_CUT_OFF:
+            lower[n] = int(relative[n] * f32(bass_fft // 2))
+            bass_cut_off_bar += 1
+            if bass_cut_off_bar > 1:
+                first_bar = 0
+            lower[n] = min(lower[n], bass_fft // 2)
+        else:
+            lower[n] = int(np.ceil(relative[n] * f32(fft // 2)))
+            if n == bass_cut_off_bar:
+                first_bar = 1
+                if n > 0:
+                    upper[n - 1] = int(relative[n] * f32(bass_fft // 2)) - 1
+            else:
+                first_bar = 0
+            lower[n] = min(lower[n], fft // 2)
+
+        if n > 0:
+            if not first_bar:
+                upper[n - 1] = lower[n] - 1
+                # push the spectrum up if the log scale clumps bars into the bass
+                if lower[n] <= lower[n - 1]:
+                    limit = bass_fft // 2 + 1 if n < bass_cut_off_bar else fft // 2 + 1
+                    if lower[n - 1] + 1 < limit:
+                        lower[n] = lower[n - 1] + 1
+                        upper[n - 1] = lower[n] - 1
+            elif upper[n - 1] < lower[n - 1]:
+                upper[n - 1] = lower[n - 1] + 1
+
+        size = bass_fft if n < bass_cut_off_bar else fft
+        relative[n] = f32(lower[n]) / f32(size / 2)
+        cut[n] = relative[n] * f32(rate / 2)
+
+    eq = np.zeros(num_bars, dtype=np.float64)
+    for n in range(num_bars):
+        eq[n] = 1.0 / 2.0**28
+        eq[n] *= float(cut[n + 1]) ** 0.85
+        eq[n] /= np.log2(bass_fft if n < bass_cut_off_bar else fft)
+        eq[n] /= max(1, upper[n] - lower[n] + 1)
+    return lower[:num_bars], upper[:num_bars], eq, cut, bass_cut_off_bar
+
 
 class PipeWireSpectrumAnalyzer:
-    """Captures the audio stream of MPV and computes live frequency bands using numpy."""
+    """Captures the audio stream of MPV and turns it into cava-style bars (0..1) with numpy."""
 
-    SAMPLE_RATE = 44100
-    HOP = 1024  # new samples per analysis step (~23 ms)
-    FFT_SIZE = 2048  # analysis window (~46 ms, 21.5 Hz bins): short enough to stay on the beat
-    MIN_FREQ = 20.0
-    MAX_FREQ = 20_000.0
-    # Around 1 kHz, on the per-band peak magnitude. Music falls 4.5-5.5 dB/oct; the peak over the many bins
-    # of a wide treble band reads a little high, so 4 levels typical music to within a few percent.
-    TILT_DB_PER_OCTAVE = 4.0
-    RANGE_DB = 48.0  # dynamic range shown: the loudest recent band is the top, this far below is empty
-    REF_FALL_DB_PER_SECOND = 3.0  # how slowly the reference follows quieter music
-    MIN_REF_DB = -40.0  # never amplify below this (dBFS), so quiet passages stay quiet
-    SILENCE = 1e-5  # peak magnitude (about -100 dBFS) under which the input counts as silent
-    ATTACK = 0.8  # fraction of the way to a louder value covered per step
-    DECAY = 0.9  # per-step multiplier when a bar falls
+    SAMPLE_RATE = 48000  # cava's PipeWire input default
+    HOP = SAMPLE_RATE // TARGET_FRAMERATE  # 800 new samples per step: cavacore then measures 60 fps
     PEAK_FALL = 0.02
 
     def __init__(self, num_bands: int = 32, target_node: str = "mpv") -> None:
+        fft, bass_fft = fft_sizes(self.SAMPLE_RATE)
+        if num_bands < 1 or num_bands > fft // 2 + 1:
+            raise ValueError(f"num_bands must be between 1 and {fft // 2 + 1}")
         self.num_bands = num_bands
         self.target_node = target_node
         self.bands = np.zeros(num_bands, dtype=np.float32)
@@ -58,25 +146,31 @@ class PipeWireSpectrumAnalyzer:
         self._lock = threading.Lock()
         self._process_lock = threading.Lock()
 
-        self._window = np.hanning(self.FFT_SIZE).astype(np.float32)
-        self._mag_scale = np.float32(2.0 / float(self._window.sum()))  # full-scale sine -> magnitude 1.0
-        self._buffer = np.zeros(self.FFT_SIZE, dtype=np.float32)
-        self._ref_db = self.MIN_REF_DB
-        self._ref_fall = self.REF_FALL_DB_PER_SECOND * self.HOP / self.SAMPLE_RATE
+        self._fft = fft
+        self._bass_fft = bass_fft
+        lower, upper, self._eq, self._cut_off, self._bass_bars = cava_layout(num_bands, self.SAMPLE_RATE)
+        nb = self._bass_bars
+        # Sums over inclusive bin ranges via a cumulative sum: [lower, upper] -> cs[upper + 1] - cs[lower].
+        self._bass_lo, self._bass_hi = lower[:nb], np.maximum(upper[:nb] + 1, lower[:nb])
+        self._mid_lo, self._mid_hi = lower[nb:], np.maximum(upper[nb:] + 1, lower[nb:])
+        self._bass_window = np.hanning(bass_fft)
+        self._mid_window = np.hanning(fft)
+        # Only the bins some bar reads are worth taking magnitudes of.
+        self._bass_bins = int(self._bass_hi.max()) if nb else 0
+        self._mid_bins = int(self._mid_hi.max()) if nb < num_bands else 0
+        self._reset_state()
+        self.sens = 1.0  # autosens' running gain; kept across pauses like cava keeps it
+        self.autosens = True  # cava [general] autosens; only tests switch it off, to compare raw smoothing
 
-        # Band layout. Bin k sits at k * SAMPLE_RATE / FFT_SIZE Hz. A band at least one bin wide takes the
-        # peak of the bins inside it; the narrow bass bands (finer than the FFT can resolve) read the
-        # spectrum interpolated at their centre frequency, so they stay smooth instead of repeating a bin.
-        edges_hz = np.geomspace(self.MIN_FREQ, self.MAX_FREQ, num_bands + 1)
-        edge_bins = edges_hz * self.FFT_SIZE / self.SAMPLE_RATE
-        centre_hz = np.sqrt(edges_hz[:-1] * edges_hz[1:])
-        self._tilt_db = (self.TILT_DB_PER_OCTAVE * np.log2(centre_hz / 1000.0)).astype(np.float32)
-        self._num_bins = int(np.ceil(edge_bins[-1])) + 1
-        self._bin_axis = np.arange(self._num_bins, dtype=np.float64)
-        wide = np.diff(edge_bins) >= 1.0
-        self._first_wide = int(np.argmax(wide)) if wide.any() else num_bands
-        self._wide_starts = np.ceil(edge_bins[self._first_wide : num_bands]).astype(np.intp)
-        self._narrow_centres = centre_hz[: self._first_wide] * self.FFT_SIZE / self.SAMPLE_RATE
+    def _reset_state(self) -> None:
+        n = self.num_bands
+        self._input = np.zeros(self._bass_fft, dtype=np.float64)  # oldest ... newest
+        self._fall = np.zeros(n)
+        self._mem = np.zeros(n)
+        self._peak = np.zeros(n)
+        self._prev = np.zeros(n)
+        self._framerate = 75.0  # cavacore's initial estimate; converges to our step rate
+        self._sens_init = True
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -101,8 +195,7 @@ class PipeWireSpectrumAnalyzer:
             self.bands.fill(0.0)
             self.peaks.fill(0.0)
             self._since_read.fill(0.0)
-        self._buffer.fill(0.0)
-        self._ref_db = self.MIN_REF_DB
+            self._reset_state()
 
     def freeze(self) -> None:
         """Stop audio capture but keep the last frame, e.g. while playback is paused."""
@@ -209,52 +302,71 @@ class PipeWireSpectrumAnalyzer:
                     except OSError as err:
                         logger.debug("Unable to terminate audio capture process: %s", err)
 
-    # ── Analysis ─────────────────────────────────────────────────────────────
-
-    def _band_magnitudes(self, samples: np.ndarray) -> np.ndarray:
-        """Slide ``samples`` into the window and return the peak magnitude (0 dBFS = 1.0) of each band."""
-        buf = self._buffer
-        buf[: -len(samples)] = buf[len(samples) :]
-        buf[-len(samples) :] = samples.astype(np.float32) * np.float32(1.0 / 32768.0)
-        spectrum = np.abs(np.fft.rfft((buf - buf.mean()) * self._window))[: self._num_bins] * self._mag_scale
-        magnitudes = np.empty(self.num_bands, dtype=np.float32)
-        magnitudes[: self._first_wide] = np.interp(self._narrow_centres, self._bin_axis, spectrum)
-        if self._first_wide < self.num_bands:
-            magnitudes[self._first_wide :] = np.maximum.reduceat(spectrum, self._wide_starts)
-        return magnitudes
+    # ── Analysis (cava_execute) ──────────────────────────────────────────────
 
     def _process_samples(self, samples: np.ndarray) -> None:
-        if len(samples) != self.HOP:
+        """One ``cava_execute`` step on ``samples`` (raw s16 values, any length up to the bass FFT size)."""
+        count = min(len(samples), self._bass_fft)
+        if count < 1:
             return
-        magnitudes = self._band_magnitudes(samples)
-        if magnitudes.max() < self.SILENCE:
-            levels = np.zeros(self.num_bands, dtype=np.float32)
-            self._ref_db = max(self.MIN_REF_DB, self._ref_db - self._ref_fall)
-        else:
-            decibels = 20.0 * np.log10(np.maximum(magnitudes, 1e-9)) + self._tilt_db
-            # Jump up to a louder reference at once, fall back over seconds: beats stay taller than
-            # the passages around them, while the player's volume setting still cancels out.
-            self._ref_db = max(float(decibels.max()), self._ref_db - self._ref_fall, self.MIN_REF_DB)
-            levels = np.clip(
-                (decibels - (self._ref_db - self.RANGE_DB)) / self.RANGE_DB, 0.0, 1.0
-            ).astype(np.float32)
-        self._smooth_bands(levels)
+        fresh = samples[-count:].astype(np.float64)
+        silence = not fresh.any()
 
-    def _smooth_bands(self, new_bands: np.ndarray) -> None:
-        """Fast attack, gravity decay, and falling peak markers, per band."""
+        # cavacore estimates its own framerate from how much audio arrives per call.
+        self._framerate -= self._framerate / 64.0
+        self._framerate += self.SAMPLE_RATE / count / 64.0
+
+        buf = self._input
+        buf[:-count] = buf[count:]
+        buf[-count:] = fresh
+
+        # FFT magnitudes of the newest bass_fft / fft samples (cava reverses time; the spectrum magnitude is the same).
+        out = np.empty(self.num_bands, dtype=np.float64)
+        if self._bass_bars:
+            bass = np.abs(np.fft.rfft(buf * self._bass_window)[: self._bass_bins])
+            bass_sum = np.concatenate(([0.0], np.cumsum(bass)))
+            out[: self._bass_bars] = bass_sum[self._bass_hi] - bass_sum[self._bass_lo]
+        if self._bass_bars < self.num_bands:
+            mid = np.abs(np.fft.rfft(buf[-self._fft :] * self._mid_window)[: self._mid_bins])
+            mid_sum = np.concatenate(([0.0], np.cumsum(mid)))
+            out[self._bass_bars :] = mid_sum[self._mid_hi] - mid_sum[self._mid_lo]
+        out *= self._eq * self.sens  # per-bar EQ, then autosens
+
+        # Smoothing: gravity fall-off, then the integral memory.
+        framerate_mod = 66.0 / self._framerate
+        gravity_mod = framerate_mod**2.5 * 2.0 / NOISE_REDUCTION
+        integral_mod = framerate_mod**0.1
+        falling = out < self._prev
+        fallen = np.maximum(self._peak * (1.0 - self._fall * self._fall * gravity_mod), 0.0)
+        self._fall = np.where(falling, self._fall + 0.028, 0.0)
+        self._peak = np.where(falling, self._peak, out)
+        out = np.where(falling, fallen, out)
+        self._prev = out
+        out = self._mem * NOISE_REDUCTION / integral_mod + out
+        self._mem = out  # the integral keeps the unclamped value, as cavacore does
+        overshoot = bool((out > 1.0).any())
+        out = np.minimum(out, 1.0)
+
+        # Automatic sensitivity.
+        if not self.autosens:
+            pass
+        elif overshoot:
+            self.sens *= 1.0 - 0.02 * framerate_mod
+            self._sens_init = False
+        elif not silence:
+            self.sens *= 1.0 + 0.001 * framerate_mod
+            if self._sens_init:
+                self.sens *= 1.0 + 0.1 * framerate_mod
+
+        self._publish(out.astype(np.float32))
+
+    def _publish(self, new_bands: np.ndarray) -> None:
         with self._lock:
-            attack = new_bands > self.bands
-            self.bands = np.where(
-                attack,
-                self.bands + self.ATTACK * (new_bands - self.bands),
-                self.bands * self.DECAY,
-            ).astype(np.float32, copy=False)
+            self.bands = new_bands
             self.peaks = np.where(
-                self.bands >= self.peaks,
-                self.bands,
-                np.maximum(0.0, self.peaks - self.PEAK_FALL),
+                new_bands >= self.peaks, new_bands, np.maximum(0.0, self.peaks - self.PEAK_FALL)
             ).astype(np.float32, copy=False)
-            np.maximum(self._since_read, self.bands, out=self._since_read)
+            np.maximum(self._since_read, new_bands, out=self._since_read)
 
     # ── Output ───────────────────────────────────────────────────────────────
 

@@ -429,53 +429,6 @@ class TestSpectrumAnalyzer(unittest.TestCase):
         analyzer.pause()
         self.assertFalse(analyzer.enabled)
 
-    def test_spectrum_is_independent_of_input_gain(self):
-        phase = np.linspace(0, 2 * np.pi * 24, PipeWireSpectrumAnalyzer.HOP, endpoint=False)
-        quiet = (np.sin(phase) * 1_000).astype(np.int16)
-        loud = (np.sin(phase) * 16_000).astype(np.int16)
-        quiet_analyzer = PipeWireSpectrumAnalyzer(num_bands=16)
-        loud_analyzer = PipeWireSpectrumAnalyzer(num_bands=16)
-
-        quiet_analyzer._process_samples(quiet)
-        loud_analyzer._process_samples(loud)
-
-        self.assertGreater(max(loud_analyzer.get_bands()[0]), 0.1)  # not vacuously equal zeros
-        np.testing.assert_allclose(
-            quiet_analyzer.get_bands()[0],
-            loud_analyzer.get_bands()[0],
-            atol=2e-3,  # int16 quantisation of the quiet signal
-        )
-
-    def test_spectrum_remains_visible_at_low_output_gain(self):
-        phase = np.linspace(0, 2 * np.pi * 24, PipeWireSpectrumAnalyzer.HOP, endpoint=False)
-        quiet = (np.sin(phase) * 8).astype(np.int16)
-        loud = (np.sin(phase) * 16_000).astype(np.int16)
-        quiet_analyzer = PipeWireSpectrumAnalyzer(num_bands=16)
-        loud_analyzer = PipeWireSpectrumAnalyzer(num_bands=16)
-
-        quiet_analyzer._process_samples(quiet)
-        loud_analyzer._process_samples(loud)
-
-        self.assertGreater(max(quiet_analyzer.get_bands()[0]), 0.0)
-        self.assertGreater(max(loud_analyzer.get_bands()[0]), 0.0)
-
-    def test_vectorized_smoothing_preserves_attack_decay_and_peaks(self):
-        analyzer = PipeWireSpectrumAnalyzer(num_bands=3)
-        attack, decay = analyzer.ATTACK, analyzer.DECAY
-
-        analyzer._smooth_bands(np.array([1.0, 0.5, 0.0], dtype=np.float32))
-        np.testing.assert_allclose(analyzer.get_bands()[0], [attack, attack / 2, 0.0], rtol=1e-6)
-        np.testing.assert_allclose(analyzer.get_bands()[1], [attack, attack / 2, 0.0], rtol=1e-6)
-
-        analyzer._smooth_bands(np.zeros(3, dtype=np.float32))
-        np.testing.assert_allclose(analyzer.bands, [attack * decay, attack / 2 * decay, 0.0], rtol=1e-6)
-        # Peaks fall by PEAK_FALL per step but never below the live bar.
-        np.testing.assert_allclose(
-            analyzer.peaks,
-            [attack - analyzer.PEAK_FALL, attack / 2 - analyzer.PEAK_FALL, 0.0],
-            rtol=1e-6,
-        )
-
     def test_pause_during_capture_keeps_process_reference_safe(self):
         analyzer = PipeWireSpectrumAnalyzer(num_bands=16, target_node="mpv")
         process = MagicMock()
