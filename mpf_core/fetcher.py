@@ -30,6 +30,8 @@ class PlaylistFetchError(RuntimeError):
 def validate_media_url(url: str) -> str:
     """Validate and normalize a public HTTP(S) YouTube playlist or video URL."""
     value = url.strip()
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise InvalidMediaURL("URL contains control characters")  # urlparse would silently drop tabs/newlines
     try:
         parsed = urlparse(value)
         port = parsed.port
@@ -71,6 +73,7 @@ def _extract_info_with_executable(executable: str, url: str) -> Any:
     try:
         result = subprocess.run(
             [executable, "-J", "--flat-playlist", "--no-warnings", "--", url],
+            stdin=subprocess.DEVNULL,  # never compete with the TUI for keystrokes
             capture_output=True,
             text=True,
             timeout=YTDLP_TIMEOUT_SECONDS,

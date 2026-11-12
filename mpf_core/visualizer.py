@@ -242,6 +242,8 @@ class PipeWireSpectrumAnalyzer:
         if shutil.which("parec"):
             return [
                 "parec",
+                # Without a device parec records the default *source*, normally the microphone.
+                "--device=@DEFAULT_MONITOR@",
                 "--format=s16le",
                 "--latency-msec=20",
                 f"--rate={self.SAMPLE_RATE}",

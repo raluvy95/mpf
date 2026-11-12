@@ -42,6 +42,7 @@ class TestCapture(unittest.TestCase):
             cmd = PipeWireSpectrumAnalyzer()._get_capture_command()
         self.assertIn("--format=s16le", cmd)
         self.assertIn("--channels=1", cmd)
+        self.assertIn("--device=@DEFAULT_MONITOR@", cmd)  # never the microphone
 
     def test_no_capture_tool(self):
         with patch("shutil.which", return_value=None):

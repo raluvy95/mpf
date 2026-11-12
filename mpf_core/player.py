@@ -5,8 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
+import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections import deque
 from contextlib import contextmanager
@@ -51,6 +55,25 @@ DEFAULT_PLAYLIST_URL = ""
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 logger = logging.getLogger(__name__)
+
+
+def _private_ipc_socket() -> Tuple[str, Optional[str]]:
+    """A socket path only this user can reach, plus a directory to delete afterwards (or None).
+
+    python-mpv-jsonipc defaults to a guessable name in /tmp, and mpv's IPC can run programs, so it
+    must not be reachable by other users. $XDG_RUNTIME_DIR is 0700 and cleaned at logout; without a
+    usable one, a fresh 0700 temporary directory is used.
+    """
+    name = f"mpf-mpv-{os.getpid()}-{secrets.token_hex(8)}.sock"
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "")
+    try:
+        info = os.stat(runtime_dir)
+        if stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077:
+            return os.path.join(runtime_dir, name), None
+    except OSError:
+        pass
+    directory = tempfile.mkdtemp(prefix="mpf-")  # created 0700
+    return os.path.join(directory, name), directory
 
 
 @contextmanager
@@ -140,6 +163,7 @@ class BlessedMusicPlayer:
         self._last_render_signature: Optional[Tuple[Any, ...]] = None
         self._render_requested = asyncio.Event()
         self._mpv_poll_error_reported = False
+        self._ipc_dir: Optional[str] = None  # temporary directory holding mpv's IPC socket, if any
         # yt-dlp chooses the YouTube client. When mpv fails a track it is retried first with yt-dlp's own
         # choice again (None, a fresh URL), then with each fallback client in order, then skipped.
         self._ytdl_fallback_clients = load_ytdl_fallback_clients(config_file)
@@ -167,8 +191,10 @@ class BlessedMusicPlayer:
         """Run the main async event loop with Blessed context managers."""
         self._loop = asyncio.get_running_loop()
         try:
+            ipc_socket, self._ipc_dir = _private_ipc_socket()
             with _mpv_environment():
                 self.mpv = MPV(
+                    ipc_socket=ipc_socket,
                     video=False,
                     ytdl=True,
                     ytdl_format="bestaudio/best",
@@ -229,6 +255,8 @@ class BlessedMusicPlayer:
                         logger.exception("MPV shutdown failed")
                     finally:
                         self.mpv = None
+                if self._ipc_dir:
+                    shutil.rmtree(self._ipc_dir, ignore_errors=True)
 
     def _move(self, x: int, y: int) -> str:
         """Return the cursor-positioning sequence for (x, y).

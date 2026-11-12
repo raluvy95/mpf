@@ -968,3 +968,72 @@ class TestLogging(unittest.TestCase):
     def test_unusable_log_location_silences_logging_instead_of_failing(self):
         configure_logging("/proc/definitely/not/writable", "/proc/definitely/not/writable/mpf.log")
         self.assertEqual(self.root.level, 50)  # CRITICAL
+
+
+class TestHardening(unittest.TestCase):
+    def test_ipc_socket_uses_the_private_runtime_dir(self):
+        from mpf_core.player import _private_ipc_socket
+
+        with tempfile.TemporaryDirectory() as runtime:
+            os.chmod(runtime, 0o700)
+            with patch.dict(os.environ, {"XDG_RUNTIME_DIR": runtime}):
+                path, cleanup = _private_ipc_socket()
+        self.assertEqual(os.path.dirname(path), runtime)
+        self.assertIsNone(cleanup)
+        self.assertTrue(os.path.basename(path).startswith("mpf-mpv-"))
+
+    def test_ipc_socket_falls_back_to_a_fresh_private_directory(self):
+        import shutil
+
+        from mpf_core.player import _private_ipc_socket
+
+        with tempfile.TemporaryDirectory() as shared:
+            os.chmod(shared, 0o755)  # group/world accessible: not acceptable
+            for env in ({"XDG_RUNTIME_DIR": shared}, {"XDG_RUNTIME_DIR": "/nonexistent"}, {}):
+                with self.subTest(env=env), patch.dict(os.environ, env, clear=False):
+                    if not env:
+                        os.environ.pop("XDG_RUNTIME_DIR", None)
+                    path, cleanup = _private_ipc_socket()
+                    self.addCleanup(shutil.rmtree, cleanup, True)
+                    self.assertIsNotNone(cleanup)
+                    self.assertEqual(os.path.dirname(path), cleanup)
+                    self.assertEqual(os.stat(cleanup).st_mode & 0o777, 0o700)
+
+    def test_ipc_socket_names_are_unpredictable(self):
+        from mpf_core.player import _private_ipc_socket
+
+        with tempfile.TemporaryDirectory() as runtime:
+            os.chmod(runtime, 0o700)
+            with patch.dict(os.environ, {"XDG_RUNTIME_DIR": runtime}):
+                self.assertNotEqual(_private_ipc_socket()[0], _private_ipc_socket()[0])
+
+    def test_yt_dlp_child_gets_no_stdin(self):
+        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout='{"id": "v", "title": "T"}', stderr="")
+        with (
+            patch("mpf_core.fetcher.shutil.which", return_value="/usr/bin/yt-dlp"),
+            patch("mpf_core.fetcher.subprocess.run", return_value=completed) as run,
+        ):
+            fetch_playlist_tracks("https://youtu.be/abc")
+        self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
+    def test_urls_with_embedded_control_characters_are_rejected(self):
+        from mpf_core.fetcher import InvalidMediaURL, validate_media_url
+
+        for bad in ("https://youtu.be/ab\tc", "https://youtu.be/abc\nhttps://evil.example", "https://youtu.be/a\x00b"):
+            with self.subTest(bad=bad), self.assertRaises(InvalidMediaURL):
+                validate_media_url(bad)
+        self.assertEqual(validate_media_url("  https://youtu.be/abc\n"), "https://youtu.be/abc")  # pasted padding is fine
+
+    def test_thumbnail_download_failures_do_not_leak_file_descriptors(self):
+        import http.client
+
+        track = Track("abc", "T")
+        with tempfile.TemporaryDirectory() as directory:
+            previewer = KittyPreviewer(thumbs_dir=directory, fallback_icon="/nonexistent")
+            self.addCleanup(previewer.close)
+            before = len(os.listdir("/proc/self/fd"))
+            for error in (http.client.InvalidURL("bad"), OSError("down"), ValueError("bad")):
+                with patch("mpf_core.previewer.urllib.request.urlopen", side_effect=error):
+                    previewer._download(track)
+            self.assertEqual(len(os.listdir("/proc/self/fd")), before)
+            self.assertEqual([name for name in os.listdir(directory) if name.startswith(".thumb-")], [])

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import logging
 import os
 import re
@@ -107,11 +108,13 @@ class KittyPreviewer:
 
         fd, tmp_path = tempfile.mkstemp(prefix=".thumb-", dir=self.thumbs_dir)
         try:
-            with urllib.request.urlopen(track.thumbnail, timeout=10) as response, os.fdopen(fd, "wb") as output:
-                content_type = response.headers.get_content_type()
-                if not content_type.startswith("image/"):
-                    raise ValueError(f"unexpected content type {content_type}")
-                data = response.read(THUMBNAIL_DOWNLOAD_MAX_BYTES + 1)
+            # fdopen takes ownership of fd: it is closed exactly once, whatever fails below.
+            with os.fdopen(fd, "wb") as output:
+                with urllib.request.urlopen(track.thumbnail, timeout=10) as response:
+                    content_type = response.headers.get_content_type()
+                    if not content_type.startswith("image/"):
+                        raise ValueError(f"unexpected content type {content_type}")
+                    data = response.read(THUMBNAIL_DOWNLOAD_MAX_BYTES + 1)
                 if len(data) > THUMBNAIL_DOWNLOAD_MAX_BYTES:
                     raise ValueError("thumbnail exceeds download size limit")
                 output.write(data)
@@ -119,11 +122,7 @@ class KittyPreviewer:
                 os.fsync(output.fileno())
             os.replace(tmp_path, local_path)
             self.expire_cache()
-        except (OSError, ValueError) as err:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+        except (OSError, ValueError, http.client.HTTPException) as err:
             logger.warning("Unable to cache thumbnail for %s: %s", track.id, err)
         finally:
             try:
