@@ -29,14 +29,25 @@ from mpf_core.cache import (
     save_playback_state,
 )
 from mpf_core.config import (
+    BAR_POSITIONS,
+    COLOR_MODES,
     VISUALIZER_STYLES,
+    load_bar_position,
+    load_color_mode,
     load_default_playlist,
+    load_rainbow_colors,
     load_vim_mode,
     load_visualizer_preferences,
     load_ytdl_fallback_clients,
+    parse_rainbow_colors,
+    parse_ytdl_fallback_clients,
+    save_bar_position,
+    save_color_mode,
     save_default_playlist,
+    save_rainbow_colors,
     save_vim_mode,
     save_visualizer_preferences,
+    save_ytdl_fallback_clients,
 )
 from mpf_core.fetcher import (
     InvalidMediaURL,
@@ -113,7 +124,7 @@ class BlessedMusicPlayer:
     INPUT_POLL_INTERVAL = 0.25  # inkey returns at once on a keypress; this only bounds shutdown latency
     SHUFFLE_ICONS = {True: "\U000f049f", False: "\U000f049e"}
     SUMMARY_SEPARATOR = "  ·  "
-    FOOTER_HINTS = [("?", "help"), ("Space", "pause"), ("/", "search"), ("o", "open"), ("q", "quit")]
+    FOOTER_HINTS = [("?", "help"), ("Space", "pause"), ("/", "search"), ("o", "open"), ("q", "quit"), (",", "settings")]
 
     def __init__(
         self,
@@ -144,14 +155,21 @@ class BlessedMusicPlayer:
         self._spectrum_style, configured_visualizer = load_visualizer_preferences(config_file)
         self._show_visualizer = configured_visualizer if show_visualizer is None else show_visualizer
         self._show_preview = show_preview
+        self._rainbow_colors = load_rainbow_colors(config_file)
+        self._bar_position = load_bar_position(config_file)
+        self._color_mode = load_color_mode(config_file)
+        # Per-cell intensity (0..1) of the last frame for styles that are not bars; None for bar styles.
+        self._cell_levels: Optional[np.ndarray] = None
         self._vim_mode = load_vim_mode(config_file) if vim_mode is None else vim_mode
         self._show_help = False
+        self._show_settings = False
+        self._settings_msg = ""
         self._status_msg = "Initializing..."
 
         # UI state
         self._selected_list_idx = 0
         self._scroll_offset = 0
-        self._input_mode = "none"  # "search" | "url" | "none"
+        self._input_mode = "none"  # "search" | "url" | "playlist" | "clients" | "rainbow" | "none"
         self._input_buffer = ""
         self._time_pos = 0.0
         self._duration = 0.0
@@ -766,6 +784,8 @@ class BlessedMusicPlayer:
                         if self._playlist_task and not self._playlist_task.done():
                             self._playlist_task.cancel()
                         self._playlist_task = asyncio.create_task(self.load_playlist(candidate))
+                elif self._input_mode in ("playlist", "clients", "rainbow"):
+                    self._apply_setting_input(self._input_mode, self._input_buffer)
                 self._input_mode = "none"
                 self._input_buffer = ""
             elif key_name == "KEY_ESCAPE":
@@ -802,11 +822,18 @@ class BlessedMusicPlayer:
                 self._toggle_vim_mode()
             return
 
+        if self._show_settings:
+            self._dispatch_settings_key(key, key_name)
+            return
+
         # Player navigation shortcuts
         if key in ("q", "Q"):
             self._running = False
         elif key == "?":
             self._show_help = True
+        elif key == ",":
+            self._show_settings = True
+            self._settings_msg = ""
         elif key == " ":
             self.set_paused(not self._is_paused)
         elif key in ("n", "N"):
@@ -842,22 +869,11 @@ class BlessedMusicPlayer:
                     self._status_msg = f"Mute failed: {err}"
                     logger.warning("MPV mute failed: %s", err)
         elif key == "v":
-            self._show_visualizer = not self._show_visualizer
-            self._spectrum_mode = None
-            save_visualizer_preferences(self._spectrum_style, self._show_visualizer, self.config_file)
-            if self._show_visualizer:
-                self.spectrum.resume()
-            else:
-                self.spectrum.pause()
-                self.previewer.clear()
-            print(self.term.clear, end="", flush=True)
+            self._toggle_visualizer()
         elif key == "V":
             self._toggle_vim_mode()
         elif key in ("a", "A"):
-            style_index = self.SPECTRUM_STYLES.index(self._spectrum_style)
-            self._spectrum_style = self.SPECTRUM_STYLES[(style_index + 1) % len(self.SPECTRUM_STYLES)]
-            save_visualizer_preferences(self._spectrum_style, self._show_visualizer, self.config_file)
-            self._spectrum_history.clear()
+            self._cycle_visualizer_style()
         elif key in ("t", "T"):
             self._show_preview = not self._show_preview
             if not self._show_preview:
@@ -990,6 +1006,7 @@ class BlessedMusicPlayer:
         return [row.tobytes().decode("utf-32-le") for row in grid]
 
     def _render_spectrum_lines(self, bands: List[float], height: int, width: int) -> List[str]:
+        self._cell_levels = None
         if self._spectrum_style == "waterfall":
             if self.spectrum.enabled:
                 self._spectrum_history.append(bands)
@@ -998,6 +1015,9 @@ class BlessedMusicPlayer:
             self._spectrum_history = self._spectrum_history[-height:]
             padding = [[0.0] * width] * max(0, height - len(self._spectrum_history))
             rows = padding + self._spectrum_history
+            self._cell_levels = np.zeros((height, width))
+            for index, values in enumerate(rows):
+                self._cell_levels[index, : len(values)] = values[:width]
             return [
                 "".join(self.SPECTRUM_CHARS[min(len(self.SPECTRUM_CHARS) - 1, int(value * (len(self.SPECTRUM_CHARS) - 1)))] for value in row)
                 for row in rows
@@ -1007,8 +1027,26 @@ class BlessedMusicPlayer:
         if self._spectrum_style == "braille":
             return self._render_braille_lines(bands, height, width)
 
+        if self._spectrum_style == "galaxy":
+            return self._render_galaxy_lines(bands, height, width)
+        top = self._bar_position == "top"
+        if self._spectrum_style == "thin":
+            return self._render_bar_lines(bands, height, width, top, 2, "┃", "╻" if top else "╹")
+        if self._spectrum_style == "fewbars":
+            count = max(1, (width + 1) // 6)
+            groups = [float(np.mean(group)) for group in np.array_split(np.asarray(bands, dtype=np.float64), count)]
+            expanded = [value for group in groups for value in [group] * 5 + [-1.0]]
+            return self._render_bar_lines(expanded, height, width, top, 1, "█", "▀" if top else "▄")
+        if self._spectrum_style == "rainbow":
+            left_width = width // 2
+            bands = list(bands[:left_width][::-1]) + list(bands[: width - left_width])  # bass meets in the middle
+
+        if top and self._spectrum_style in ("bars", "rainbow"):
+            return self._render_bar_lines(bands, height, width, True, 1, "█", "▀")
+
         lines = [[" "] * width for _ in range(height)]
         if self._spectrum_style == "waveform":
+            self._cell_levels = np.tile(np.pad(np.asarray(bands[:width], dtype=np.float64), (0, max(0, width - len(bands)))), (height, 1))
             for col, value in enumerate(bands[:width]):
                 row = height - 1 - min(height - 1, int(value * height))
                 lines[row][col] = "•"
@@ -1024,9 +1062,97 @@ class BlessedMusicPlayer:
                     lines[row][col] = "▁▂▃▄▅▆▇"[row_level - 1]
         return ["".join(line) for line in lines]
 
+    @staticmethod
+    def _render_bar_lines(
+        bands: List[float], height: int, width: int, top: bool, spacing: int, full: str, cap: str
+    ) -> List[str]:
+        """Bars in half-cell steps, growing from the top or bottom edge; a negative value is a gap column."""
+        lines = [[" "] * width for _ in range(height)]
+        for col in range(0, min(width, len(bands) * spacing), spacing):
+            value = bands[col // spacing]
+            if value < 0:
+                continue
+            level = int(min(1.0, value) * height * 2)
+            for step in range(min(height, level // 2 + level % 2)):
+                char = full if step < level // 2 else cap
+                lines[step if top else height - 1 - step][col] = char
+        return ["".join(line) for line in lines]
+
+    def _render_galaxy_lines(self, bands: List[float], height: int, width: int) -> List[str]:
+        """A glowing ring whose radius follows the spectrum, drawn in braille dots and slowly turning."""
+        pixels_w, pixels_h = width * 2, height * 4
+        values = np.asarray(bands, dtype=np.float64)
+        if values.size == 0:
+            values = np.zeros(1)
+        dots = np.zeros((pixels_h, pixels_w), dtype=bool)
+        center_x, center_y = (pixels_w - 1) / 2, (pixels_h - 1) / 2
+        # An ellipse matched to the box: at full level the ring touches its edges and cannot leave it.
+        theta = np.linspace(0, 2 * np.pi, max(720, 4 * (pixels_w + pixels_h)), endpoint=False)
+        turn = (time.time() * 0.15) % 1.0  # fraction of a revolution
+        # Mirror the spectrum around the circle so the ring closes without a seam.
+        position = (np.abs(((theta / (2 * np.pi) + turn) % 1.0) * 2 - 1) * (values.size - 1)).astype(int)
+        level = values[np.clip(position, 0, values.size - 1)]
+        for scale, spin in ((1.0, 0.0), (0.55, 0.5)):
+            radius = scale * (0.3 + 0.7 * level)
+            xs = np.rint(center_x + center_x * radius * np.cos(theta + spin)).astype(int)
+            ys = np.rint(center_y + center_y * radius * np.sin(theta + spin)).astype(int)
+            keep = (xs >= 0) & (xs < pixels_w) & (ys >= 0) & (ys < pixels_h)
+            dots[ys[keep], xs[keep]] = True
+        dots[int(center_y) : int(center_y) + 2, int(center_x) : int(center_x) + 2] = True  # the core
+        # Intensity of a cell is how far out the ring was pushed, i.e. how loud that part of the spectrum is.
+        offset_x = (np.arange(pixels_w)[None, :] - center_x) / max(1.0, center_x)
+        offset_y = (np.arange(pixels_h)[:, None] - center_y) / max(1.0, center_y)
+        distance = np.minimum(1.0, np.hypot(offset_x, offset_y))
+        self._cell_levels = distance.reshape(height, 4, width, 2).mean(axis=(1, 3))
+        codes = np.zeros((height, width), dtype=np.int64)
+        for dy in range(4):
+            codes += dots[dy::4, 0::2] * self.BRAILLE_LEFT[dy]
+            codes += dots[dy::4, 1::2] * self.BRAILLE_RIGHT[dy]
+        return ["".join(row) for row in self.BRAILLE_TABLE[codes]]
+
+    def _band_count(self, width: int) -> int:
+        """How many spectrum bands the current style wants for ``width`` columns."""
+        if self._spectrum_style == "braille":
+            return width * 2
+        if self._spectrum_style == "galaxy":
+            return 64
+        if self._spectrum_style == "thin":
+            return (width + 1) // 2
+        return width
+
+    def _palette_style(self, fraction: float) -> Any:
+        """Style for a 0..1 position along the rainbow colours."""
+        count = len(self._rainbow_colors)
+        name = self._rainbow_colors[min(count - 1, max(0, int(fraction * count)))]
+        return getattr(self.term, f"bold_{name}")
+
+    def _styled_row(self, row: int, height: int, line: str) -> str:
+        """Colour one visualizer row: bold cyan, or in rainbow mode by position along the colours.
+
+        Bar styles colour by the row's height from the edge the bars grow from, so quiet parts stay in
+        the first colour and only loud peaks reach the last. The other styles colour each cell by its
+        own intensity (waterfall brightness, the waveform's level, how far the galaxy ring is pushed out);
+        braille colours by row like the bars.
+        """
+        if self._spectrum_style != "rainbow" and self._color_mode != "rainbow":
+            return str(self.term.bold_cyan(line))
+        levels = self._cell_levels
+        if levels is None or row >= len(levels):
+            anchored_top = self._bar_position == "top"
+            return str(self._palette_style((row if anchored_top else height - 1 - row) / max(1, height - 1))(line))
+        segments: List[Tuple[Any, str]] = []
+        for col, char in enumerate(line):
+            blank = char in (" ", "\u2800")
+            style = None if blank else self._palette_style(float(levels[row, col]) if col < levels.shape[1] else 0.0)
+            if segments and segments[-1][0] is style:
+                segments[-1] = (style, segments[-1][1] + char)
+            else:
+                segments.append((style, char))
+        return self._paint(segments)
+
     def _visualizer_animating(self) -> bool:
         """True while the spectrum is live; a frozen or cleared one is static."""
-        return self._show_visualizer and not self._show_help and bool(self.spectrum.enabled)
+        return self._show_visualizer and not self._show_help and not self._show_settings and bool(self.spectrum.enabled)
 
     async def _render_loop(self) -> None:
         while self._running:
@@ -1069,9 +1195,14 @@ class BlessedMusicPlayer:
             self._mpv_idle,
             self._show_visualizer,
             self._spectrum_style,
+            self._bar_position,
+            self._color_mode,
+            self._rainbow_colors,
             self._show_preview,
             self._vim_mode,
             self._show_help,
+            self._show_settings,
+            self._settings_msg,
             self._volume,
             self.queue.repeat_mode,
             self.queue.shuffle_enabled,
@@ -1081,6 +1212,88 @@ class BlessedMusicPlayer:
             self.previewer.generation,
             animated_frame,
         )
+
+    def _toggle_visualizer(self) -> None:
+        self._show_visualizer = not self._show_visualizer
+        self._spectrum_mode = None
+        save_visualizer_preferences(self._spectrum_style, self._show_visualizer, self.config_file)
+        if self._show_visualizer:
+            self.spectrum.resume()
+        else:
+            self.spectrum.pause()
+            self.previewer.clear()
+        print(self.term.clear, end="", flush=True)
+
+    def _cycle_visualizer_style(self) -> None:
+        style_index = self.SPECTRUM_STYLES.index(self._spectrum_style)
+        self._spectrum_style = self.SPECTRUM_STYLES[(style_index + 1) % len(self.SPECTRUM_STYLES)]
+        save_visualizer_preferences(self._spectrum_style, self._show_visualizer, self.config_file)
+        self._spectrum_history.clear()
+
+    def _dispatch_settings_key(self, key: Any, key_name: str) -> None:
+        """Keys on the settings screen; each row's key changes that option and saves it to the config."""
+        if key in (",", "\x1b") or key_name == "KEY_ESCAPE":
+            self._show_settings = False
+        elif key in ("q", "Q"):
+            self._running = False
+        elif key == "v":
+            self._toggle_visualizer()
+        elif key in ("a", "A"):
+            self._cycle_visualizer_style()
+        elif key == "V":
+            self._toggle_vim_mode()
+        elif key in ("d", "D"):
+            self._input_mode = "playlist"
+            self._input_buffer = load_default_playlist(self.config_file)
+            self._settings_msg = ""
+        elif key in ("b", "B"):
+            index = BAR_POSITIONS.index(self._bar_position)
+            self._bar_position = BAR_POSITIONS[(index + 1) % len(BAR_POSITIONS)]
+            save_bar_position(self._bar_position, self.config_file)
+            self._spectrum_history.clear()
+        elif key in ("r", "R"):
+            self._color_mode = COLOR_MODES[(COLOR_MODES.index(self._color_mode) + 1) % len(COLOR_MODES)]
+            save_color_mode(self._color_mode, self.config_file)
+        elif key in ("g", "G"):
+            self._input_mode = "rainbow"
+            self._input_buffer = ", ".join(self._rainbow_colors)
+            self._settings_msg = ""
+        elif key in ("c", "C"):
+            self._input_mode = "clients"
+            self._input_buffer = ", ".join(self._ytdl_fallback_clients)
+            self._settings_msg = ""
+
+    def _apply_setting_input(self, mode: str, text: str) -> None:
+        """Validate and save a typed setting, reporting the outcome on the settings screen."""
+        text = text.strip()
+        if mode == "playlist":
+            try:
+                url = validate_media_url(text)
+            except InvalidMediaURL as err:
+                self._settings_msg = str(err)
+                return
+            ok = save_default_playlist(url, self.config_file)
+            self._settings_msg = "Default playlist saved." if ok else "Could not save the configuration."
+        elif mode == "rainbow":
+            colors = parse_rainbow_colors(text)
+            if colors is None:
+                self._settings_msg = "Give at least two terminal colours, e.g. blue, cyan, red or bright_red."
+                return
+            if save_rainbow_colors(colors, self.config_file):
+                self._rainbow_colors = colors
+                self._settings_msg = "Rainbow colours saved."
+            else:
+                self._settings_msg = "Could not save the configuration."
+        else:
+            clients = parse_ytdl_fallback_clients(text)
+            if clients is None:
+                self._settings_msg = "Client names may only use letters, digits and underscores."
+                return
+            if save_ytdl_fallback_clients(clients, self.config_file):
+                self._ytdl_fallback_clients = clients
+                self._settings_msg = "Fallback clients saved."
+            else:
+                self._settings_msg = "Could not save the configuration."
 
     def _toggle_vim_mode(self) -> None:
         self._vim_mode = not self._vim_mode
@@ -1153,6 +1366,7 @@ class BlessedMusicPlayer:
                     (("a",), "Change visualizer style", None),
                     (("t",), "Toggle thumbnail preview", None),
                     (("V",), "Toggle Vim keys", ("on", "green") if vim else ("off", "red")),
+                    ((",",), "Open settings", None),
                 ],
             ),
             (
@@ -1164,14 +1378,65 @@ class BlessedMusicPlayer:
             ),
         ]
 
+    @staticmethod
+    def _on_off(value: bool) -> Tuple[str, str]:
+        return ("on", "green") if value else ("off", "red")
+
+    def _settings_sections(self) -> List[Tuple[str, List[Tuple[Tuple[str, ...], str, Optional[Tuple[str, str]]]]]]:
+        """Settings content in the help's row format; every row mirrors one config.json key."""
+        playlist = load_default_playlist(self.config_file)
+        shown = playlist[:40] + "…" if len(playlist) > 40 else playlist or "none"
+        clients = ", ".join(self._ytdl_fallback_clients) or "none"
+        return [
+            (
+                "Display",
+                [
+                    (("v",), "Show visualizer", self._on_off(self._show_visualizer)),
+                    (("a",), "Visualizer style", (self._spectrum_style, "cyan")),
+                    (("b",), "Bar position", (self._bar_position, "cyan")),
+                    (("r",), "Rainbow colouring", self._on_off(self._color_mode == "rainbow")),
+                    (("g",), "Rainbow colours", (", ".join(self._rainbow_colors), "cyan")),
+                ],
+            ),
+            ("General", [(("V",), "Vim keys", self._on_off(self._vim_mode))]),
+            ("Library", [(("d",), "Default playlist", (shown, "cyan"))]),
+            ("Playback", [(("c",), "YouTube fallback clients", (clients, "cyan"))]),
+        ]
+
     def _help_lines(self, width: Optional[int] = None) -> List[str]:
-        """Styled help screen lines, each cut to ``width`` visible characters when given.
+        """Styled help screen lines, each cut to ``width`` visible characters when given."""
+        return self._screen_lines(" MPF HELP ", self._help_sections(), "?", width)
+
+    def _settings_lines(self, width: Optional[int] = None) -> List[str]:
+        """Styled settings screen: the help's layout plus the prompt or the last result."""
+        lines = self._screen_lines(" MPF SETTINGS ", self._settings_sections(), ",", width)
+        term = self.term
+        lines.append("")
+        if self._input_mode in ("playlist", "clients", "rainbow"):
+            label = {
+                "playlist": "default playlist ",
+                "clients": "clients (comma separated) ",
+                "rainbow": "colours, bottom to top (comma separated) ",
+            }[self._input_mode]
+            lines.append(self._paint([(term.bold_yellow, f" {label}{self._input_buffer}█")], width))
+            lines.append(self._paint([(term.dim, " Enter saves · Esc cancels")], width))
+        elif self._settings_msg:
+            lines.append(self._paint([(term.dim, f" {self._settings_msg}")], width))
+        return lines
+
+    def _screen_lines(
+        self,
+        title_text: str,
+        sections: List[Tuple[str, List[Tuple[Tuple[str, ...], str, Optional[Tuple[str, str]]]]]],
+        close_key: str,
+        width: Optional[int],
+    ) -> List[str]:
+        """Lines of a help-style screen, each cut to ``width`` visible characters when given.
 
         Keys sit in boxes, each section has its own colour for its title and keys, and descriptions
         share one aligned column.
         """
         term = self.term
-        sections = self._help_sections()
 
         def plain_width(keys: Tuple[str, ...]) -> int:
             return sum(len(key) + 2 for key in keys) + len(keys) - 1  # "[k]" per key, one space between
@@ -1180,8 +1445,8 @@ class BlessedMusicPlayer:
         rows_out: List[List[Tuple[Any, str]]] = [
             # Reverse video swaps the terminal's own foreground and background, so the title is
             # readable on any theme; fixed colour pairs (white on blue) are remapped by themes.
-            [(None, " "), (term.bold_reverse, " MPF HELP "), (term.dim, "  press ")]
-            + self._keycap_segments("?", None)
+            [(None, " "), (term.bold_reverse, title_text), (term.dim, "  press ")]
+            + self._keycap_segments(close_key, None)
             + [(term.dim, " to close")]
         ]
         for title, rows in sections:
@@ -1201,11 +1466,12 @@ class BlessedMusicPlayer:
         return [self._paint(segments, width) for segments in rows_out]
 
     def _render_help(self) -> None:
-        """Render a compact keyboard reference without leaving the player."""
+        """Render the help or settings screen without leaving the player."""
         term = self.term
         width = max(0, term.width - 3)
         output = [term.clear + term.home]
-        for row, line in enumerate(self._help_lines(width)[: term.height]):
+        lines = self._settings_lines(width) if self._show_settings else self._help_lines(width)
+        for row, line in enumerate(lines[: term.height]):
             output.append(self._move(2, row) + line + term.clear_eol)
         print("".join(output), end="", flush=True)
 
@@ -1242,7 +1508,7 @@ class BlessedMusicPlayer:
             print(term.home + term.red("Terminal window too small!"), end="", flush=True)
             return
 
-        if self._show_help:
+        if self._show_help or self._show_settings:
             if not self._help_visible:
                 self._help_visible = True
                 self.previewer.clear()
@@ -1324,13 +1590,13 @@ class BlessedMusicPlayer:
 
                 # Render Spectrum Analyzer
                 viz_avail_width = w - viz_start_col - 2
-                num_bands = viz_avail_width * 2 if self._spectrum_style == "braille" else viz_avail_width
+                num_bands = self._band_count(viz_avail_width)
                 bands, _peaks = self.spectrum.get_bands(num_bands)
                 spectrum_lines = self._render_spectrum_lines(bands, spec_height, viz_avail_width)
 
                 for r in range(spec_height):
                     current_screen_row = row + r
-                    out.append(self._move(viz_start_col, current_screen_row) + term.bold_cyan(spectrum_lines[r]) + term.clear_eol)
+                    out.append(self._move(viz_start_col, current_screen_row) + self._styled_row(r, spec_height, spectrum_lines[r]) + term.clear_eol)
 
                 # Render Kitty image overlay
                 if show_preview_box:

@@ -13,7 +13,16 @@ from mpf_core.fetcher import InvalidMediaURL, validate_media_url
 from mpf_core.paths import CONFIG_FILE
 
 logger = logging.getLogger(__name__)
-VISUALIZER_STYLES = ("waterfall", "bars", "braille", "waveform")
+VISUALIZER_STYLES = ("waterfall", "bars", "braille", "waveform", "fewbars", "thin", "galaxy", "rainbow")
+# Where bar-type styles (bars, fewbars, thin, rainbow) are anchored; independent of the style.
+BAR_POSITIONS = ("bottom", "top")
+# "rainbow" colours any style's rows by height with rainbow_colors; "plain" keeps the default cyan.
+COLOR_MODES = ("plain", "rainbow")
+# Terminal palette names, so the colours follow the terminal's own theme.
+_BASE_COLORS = ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white")
+PALETTE_COLORS = _BASE_COLORS + tuple(f"bright_{name}" for name in _BASE_COLORS)
+# Rainbow rows run from the bottom (quiet) to the top (loud); two names make a two-colour split.
+DEFAULT_RAINBOW_COLORS = ("blue", "cyan", "green", "yellow", "red")
 DEFAULT_VIM_MODE = True
 # yt-dlp picks the YouTube client itself. When mpv fails a track (YouTube's media server sometimes
 # answers HTTP 403, or yt-dlp errors out), the track is first retried once with yt-dlp's own choice
@@ -175,4 +184,89 @@ def save_vim_mode(enabled: bool, config_file: str = CONFIG_FILE) -> bool:
     if config is None:
         return False
     config["vim_mode"] = enabled
+    return _save_config(config, config_file)
+
+
+def parse_ytdl_fallback_clients(text: str) -> Optional[tuple[str, ...]]:
+    """Parse comma or space separated client names; None when any name is invalid."""
+    names = [name for name in re.split(r"[,\s]+", text.strip()) if name]
+    if not all(_CLIENT_NAME.fullmatch(name) for name in names):
+        return None
+    return tuple(dict.fromkeys(names))
+
+
+def save_ytdl_fallback_clients(clients: tuple[str, ...], config_file: str = CONFIG_FILE) -> bool:
+    """Persist the fallback client list without replacing other settings."""
+    if not all(isinstance(name, str) and _CLIENT_NAME.fullmatch(name) for name in clients):
+        return False
+    config = _load_config_for_update(config_file)
+    if config is None:
+        return False
+    config["ytdl_fallback_clients"] = list(clients)
+    return _save_config(config, config_file)
+
+
+def parse_rainbow_colors(text: str) -> Optional[tuple[str, ...]]:
+    """Parse comma or space separated palette names (at least two); None when invalid."""
+    names = tuple(name for name in re.split(r"[,\s]+", text.strip().lower()) if name)
+    if len(names) < 2 or not all(name in PALETTE_COLORS for name in names):
+        return None
+    return names
+
+
+def load_rainbow_colors(config_file: str = CONFIG_FILE) -> tuple[str, ...]:
+    """Return the rainbow colours, bottom to top, using the default for invalid values."""
+    value = _load_config(config_file).get("rainbow_colors")
+    if value is None:
+        return DEFAULT_RAINBOW_COLORS
+    if isinstance(value, list):
+        colors = parse_rainbow_colors(",".join(map(str, value)))
+        if colors:
+            return colors
+    logger.warning("Ignoring invalid rainbow_colors in %s", config_file)
+    return DEFAULT_RAINBOW_COLORS
+
+
+def save_rainbow_colors(colors: tuple[str, ...], config_file: str = CONFIG_FILE) -> bool:
+    """Persist the rainbow colours without replacing other settings."""
+    if parse_rainbow_colors(",".join(colors)) != tuple(colors):
+        return False
+    config = _load_config_for_update(config_file)
+    if config is None:
+        return False
+    config["rainbow_colors"] = list(colors)
+    return _save_config(config, config_file)
+
+
+def load_bar_position(config_file: str = CONFIG_FILE) -> str:
+    """Return where bars are anchored, using "bottom" for invalid values."""
+    value = _load_config(config_file).get("bar_position")
+    return value if value in BAR_POSITIONS else "bottom"
+
+
+def save_bar_position(position: str, config_file: str = CONFIG_FILE) -> bool:
+    """Persist the bar position without replacing other settings."""
+    if position not in BAR_POSITIONS:
+        return False
+    config = _load_config_for_update(config_file)
+    if config is None:
+        return False
+    config["bar_position"] = position
+    return _save_config(config, config_file)
+
+
+def load_color_mode(config_file: str = CONFIG_FILE) -> str:
+    """Return the visualizer colour mode, using "plain" for invalid values."""
+    value = _load_config(config_file).get("visualizer_color")
+    return value if value in COLOR_MODES else "plain"
+
+
+def save_color_mode(mode: str, config_file: str = CONFIG_FILE) -> bool:
+    """Persist the visualizer colour mode without replacing other settings."""
+    if mode not in COLOR_MODES:
+        return False
+    config = _load_config_for_update(config_file)
+    if config is None:
+        return False
+    config["visualizer_color"] = mode
     return _save_config(config, config_file)

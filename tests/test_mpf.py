@@ -790,10 +790,9 @@ class TestSpectrumStyles(unittest.TestCase):
         self.assertEqual(player._spectrum_style, "bars")
         player._handle_key("a")
         self.assertEqual(player._spectrum_style, "braille")
-        player._handle_key("a")
-        self.assertEqual(player._spectrum_style, "waveform")
-        player._handle_key("a")
-        self.assertEqual(player._spectrum_style, "waterfall")
+        for expected in ("waveform", "fewbars", "thin", "galaxy", "rainbow", "waterfall"):
+            player._handle_key("a")
+            self.assertEqual(player._spectrum_style, expected)
 
     def test_style_and_visibility_survive_restart(self):
         from mpf_core.player import BlessedMusicPlayer
@@ -897,6 +896,281 @@ class TestPlayerQualityOfLife(unittest.TestCase):
 
         player._handle_key(left)
         player.mpv.command.assert_called_once_with("seek", -5, "relative")
+
+
+class TestSettingsScreen(unittest.TestCase):
+    def _player(self, **kwargs):
+        import tempfile
+
+        from mpf_core.player import BlessedMusicPlayer
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        config = os.path.join(directory.name, "config.json")
+        player = BlessedMusicPlayer(auto_play=False, config_file=config, **kwargs)
+        self.addCleanup(player.previewer.close)
+        return player, config
+
+    def _type(self, player, text):
+        for char in text:
+            player._handle_key(char)
+        player._handle_key("\n")
+
+    def test_comma_opens_and_closes_settings(self):
+        player, _config = self._player()
+        player._handle_key(",")
+        self.assertTrue(player._show_settings)
+        player._handle_key("\x1b")
+        self.assertFalse(player._show_settings)
+
+    def test_settings_screen_lists_every_option_in_help_style(self):
+        player, _config = self._player(vim_mode=True)
+        text = "\n".join(player.term.strip_seqs(line) for line in player._settings_lines())
+        for expected in (
+            "MPF SETTINGS",
+            "[v]  Show visualizer (now on)",
+            "[a]  Visualizer style (now waterfall)",
+            "[V]  Vim keys (now on)",
+            "[d]  Default playlist (now none)",
+            "[c]  YouTube fallback clients (now tv_simply, mweb)",
+        ):
+            self.assertIn(expected, text)
+
+    def test_settings_keys_change_and_persist_options(self):
+        from mpf_core.config import load_vim_mode, load_visualizer_preferences
+
+        player, config = self._player(vim_mode=True)
+        player._handle_key(",")
+        player._handle_key("V")
+        player._handle_key("a")
+        player._handle_key("v")
+        self.assertFalse(load_vim_mode(config))
+        self.assertEqual(load_visualizer_preferences(config), ("bars", False))
+        self.assertTrue(player._show_settings)
+
+    def test_edit_default_playlist_validates_and_saves(self):
+        from mpf_core.config import load_default_playlist
+
+        player, config = self._player()
+        player._handle_key(",")
+        player._handle_key("d")
+        self._type(player, "not a url")
+        self.assertEqual(load_default_playlist(config), "")
+        self.assertTrue(player._settings_msg)
+        player._handle_key("d")
+        player._input_buffer = ""
+        self._type(player, "https://www.youtube.com/playlist?list=PLabc")
+        self.assertEqual(load_default_playlist(config), "https://www.youtube.com/playlist?list=PLabc")
+
+    def test_edit_fallback_clients_saves_and_applies_immediately(self):
+        from mpf_core.config import load_ytdl_fallback_clients
+
+        player, config = self._player()
+        player._handle_key(",")
+        player._handle_key("c")
+        player._input_buffer = ""
+        self._type(player, "web_safari, android")
+        self.assertEqual(load_ytdl_fallback_clients(config), ("web_safari", "android"))
+        self.assertEqual(player._ytdl_fallback_clients, ("web_safari", "android"))
+        player._handle_key("c")
+        player._input_buffer = ""
+        self._type(player, "bad=name")
+        self.assertEqual(player._ytdl_fallback_clients, ("web_safari", "android"))
+        player._handle_key("c")
+        player._input_buffer = ""
+        self._type(player, "")
+        self.assertEqual(load_ytdl_fallback_clients(config), ())
+
+
+class TestNewVisualizerStyles(unittest.TestCase):
+    def _player(self):
+        import tempfile
+
+        from mpf_core.player import BlessedMusicPlayer
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        player = BlessedMusicPlayer(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
+        self.addCleanup(player.previewer.close)
+        return player
+
+    def test_every_style_fills_exactly_the_requested_area_for_any_input(self):
+        from mpf_core.config import VISUALIZER_STYLES
+
+        player = self._player()
+        for style in VISUALIZER_STYLES:
+            player._spectrum_style = style
+            for width, height in ((3, 3), (40, 8), (61, 5)):
+                for level in (0.0, 0.5, 1.0):
+                    with self.subTest(style=style, width=width, height=height, level=level):
+                        lines = player._render_spectrum_lines([level] * player._band_count(width), height, width)
+                        self.assertEqual(len(lines), height)
+                        self.assertTrue(all(len(line) == width for line in lines))
+
+    def test_bar_position_anchors_bar_styles_to_top_or_bottom(self):
+        player = self._player()
+        for style in ("bars", "thin", "fewbars", "rainbow"):
+            player._spectrum_style = style
+            for position, edge, far in (("top", 0, -1), ("bottom", -1, 0)):
+                player._bar_position = position
+                bands = [0.2] * player._band_count(12)
+                lines = player._render_spectrum_lines(bands, 6, 12)
+                with self.subTest(style=style, position=position):
+                    self.assertNotEqual(lines[edge].strip(), "")
+                    self.assertEqual(lines[far].strip(), "")
+                    quiet = player._render_spectrum_lines([0.0] * player._band_count(12), 6, 12)
+                    self.assertEqual("".join(quiet).strip(), "")
+
+    def test_galaxy_spans_the_box_width_without_leaving_it(self):
+        player = self._player()
+        player._spectrum_style = "galaxy"
+        for width, height in ((120, 8), (20, 3), (7, 3)):
+            lines = player._render_spectrum_lines([1.0] * 64, height, width)
+            with self.subTest(width=width):
+                self.assertEqual([len(line) for line in lines], [width] * height)
+                self.assertNotEqual(lines[len(lines) // 2][0], "\u2800")  # reaches the left edge
+                self.assertNotEqual(lines[len(lines) // 2][-1], "\u2800")  # and the right edge
+
+    def test_bar_position_setting_cycles_and_persists(self):
+        from mpf_core.config import load_bar_position
+
+        player = self._player()
+        player._handle_key(",")
+        player._handle_key("b")
+        self.assertEqual(player._bar_position, "top")
+        self.assertEqual(load_bar_position(player.config_file), "top")
+        player._handle_key("b")
+        self.assertEqual(load_bar_position(player.config_file), "bottom")
+
+    def test_rainbow_is_mirrored(self):
+        player = self._player()
+        player._spectrum_style = "rainbow"
+        lines = player._render_spectrum_lines([i / 20 for i in range(20)], 4, 20)
+        self.assertEqual(lines[-1], lines[-1][::-1])
+
+    def test_rainbow_colours_rows_by_height_not_bars(self):
+        from blessed import Terminal
+
+        player = self._player()
+        player._spectrum_style = "rainbow"
+        player._rainbow_colors = ("blue", "red")
+        player.term = term = Terminal(force_styling=True)
+        # Same colour for the whole row, whatever the bars in it look like.
+        self.assertEqual(player._styled_row(3, 4, " ██ "), term.bold_blue(" ██ "))
+        self.assertEqual(player._styled_row(0, 4, "████"), term.bold_red("████"))
+
+    def test_rainbow_row_colours_start_at_the_edge_bars_grow_from(self):
+        from blessed import Terminal
+
+        player = self._player()
+        player._spectrum_style = "bars"
+        player._color_mode = "rainbow"
+        player._rainbow_colors = ("blue", "red")
+        player.term = term = Terminal(force_styling=True)
+        self.assertEqual(player._styled_row(3, 4, "x"), term.bold_blue("x"))
+        player._bar_position = "top"
+        self.assertEqual(player._styled_row(0, 4, "x"), term.bold_blue("x"))
+
+    def test_colour_mode_applies_to_every_style_and_plain_stays_cyan(self):
+        from blessed import Terminal
+
+        from mpf_core.config import VISUALIZER_STYLES
+
+        player = self._player()
+        player.term = term = Terminal(force_styling=True)
+        player._rainbow_colors = ("blue", "red")
+        for style in VISUALIZER_STYLES:
+            player._spectrum_style = style
+            player._color_mode = "plain"
+            lines = player._render_spectrum_lines([1.0] * player._band_count(30), 6, 30)
+            if style != "rainbow":
+                self.assertEqual(player._styled_row(2, 6, lines[2]), term.bold_cyan(lines[2]))
+            player._color_mode = "rainbow"
+            if style == "waterfall":
+                player._spectrum_mode = "freeze"
+                player._spectrum_history = [[1.0] * 30] * 6
+                lines = player._render_spectrum_lines([1.0] * 30, 6, 30)
+            styled = "".join(player._styled_row(row, 6, line) for row, line in enumerate(lines))
+            self.assertIn("\x1b[", styled, style)  # blank cells stay unstyled, so look at the whole frame
+
+    def test_non_bar_styles_colour_by_cell_intensity_not_row(self):
+        from blessed import Terminal
+
+        player = self._player()
+        player.term = term = Terminal(force_styling=True)
+        player._rainbow_colors = ("blue", "red")
+        player._color_mode = "rainbow"
+        player._spectrum_style = "waterfall"
+        # A frozen waterfall of two frames: faint, then loud. Each cell takes its colour from its own value.
+        player._spectrum_mode = "freeze"
+        player._spectrum_history = [[0.2] * 4, [0.9] * 4]
+        loud = player._render_spectrum_lines([0.0] * 4, 2, 4)
+        self.assertEqual(player._styled_row(1, 2, loud[1]), term.bold_red(loud[1]))
+        self.assertEqual(player._styled_row(0, 2, loud[0]), term.bold_blue(loud[0]))  # the older, faint row
+
+        player._spectrum_style = "waveform"
+        lines = player._render_spectrum_lines([0.1, 0.1, 0.9, 0.9], 3, 4)
+        self.assertEqual(
+            player._styled_row(0, 3, lines[0]), " " * 2 + term.bold_red(lines[0][2:])
+        )
+        player._spectrum_style = "bars"
+        player._render_spectrum_lines([1.0] * 4, 3, 4)
+        self.assertIsNone(player._cell_levels)  # bar styles colour by row
+
+    def test_galaxy_colour_follows_how_far_the_ring_is_pushed_out(self):
+        from blessed import Terminal
+
+        player = self._player()
+        player.term = Terminal(force_styling=True)
+        player._color_mode = "rainbow"
+        player._spectrum_style = "galaxy"
+        player._render_spectrum_lines([0.5] * 64, 8, 60)
+        levels = player._cell_levels
+        self.assertEqual(levels.shape, (8, 60))
+        self.assertLess(levels[4, 30], levels[4, 0])  # the middle is cooler than the outer edge
+
+    def test_colour_mode_setting_cycles_and_persists(self):
+        from mpf_core.config import load_color_mode
+
+        player = self._player()
+        player._handle_key(",")
+        player._handle_key("r")
+        self.assertEqual(player._color_mode, "rainbow")
+        self.assertEqual(load_color_mode(player.config_file), "rainbow")
+        player._handle_key("r")
+        self.assertEqual(load_color_mode(player.config_file), "plain")
+
+    def test_rainbow_colours_validate_save_and_load(self):
+        import tempfile
+
+        from mpf_core.config import (
+            DEFAULT_RAINBOW_COLORS,
+            load_rainbow_colors,
+            parse_rainbow_colors,
+            save_rainbow_colors,
+        )
+
+        self.assertEqual(parse_rainbow_colors("Blue, bright_red"), ("blue", "bright_red"))
+        for bad in ("blue", "blue, #ff0000", "blue; red", ""):
+            self.assertIsNone(parse_rainbow_colors(bad))
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "config.json")
+            self.assertEqual(load_rainbow_colors(path), DEFAULT_RAINBOW_COLORS)
+            self.assertTrue(save_rainbow_colors(("blue", "red"), path))
+            self.assertEqual(load_rainbow_colors(path), ("blue", "red"))
+            self.assertFalse(save_rainbow_colors(("blue",), path))
+            with open(path, "w", encoding="utf-8") as file:
+                file.write('{"rainbow_colors": ["Red", "BRIGHT_BLUE"]}')
+            self.assertEqual(load_rainbow_colors(path), ("red", "bright_blue"))
+
+    def test_settings_edits_rainbow_colours(self):
+        player = self._player()
+        player._handle_key(",")
+        player._handle_key("g")
+        player._input_buffer = ""
+        for char in "cyan, magenta\n":
+            player._handle_key(char)
+        self.assertEqual(player._rainbow_colors, ("cyan", "magenta"))
 
 
 if __name__ == "__main__":

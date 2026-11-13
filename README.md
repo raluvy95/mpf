@@ -93,9 +93,20 @@ Configuration defaults to `$XDG_CONFIG_HOME/mpf/config.json` or
   "visualizer_style": "waterfall",
   "show_visualizer": true,
   "vim_mode": true,
+  "bar_position": "bottom",
+  "visualizer_color": "plain",
+  "rainbow_colors": ["blue", "cyan", "green", "yellow", "red"],
   "ytdl_fallback_clients": ["tv_simply", "mweb"]
 }
 ```
+
+`visualizer_style` is one of `waterfall`, `bars`, `braille`, `waveform`,
+`fewbars`, `thin`, `galaxy` or `rainbow`. `bar_position` (`bottom` or `top`) sets which edge the `bars`, `fewbars`, `thin`
+and `rainbow` bars grow from. `visualizer_color` (`plain` or `rainbow`) colours any style: bar styles by row
+height (braille too), the others (waterfall, waveform, galaxy) by each cell's intensity
+(the `rainbow` style always does). `rainbow_colors` is optional: two or
+more terminal palette names (`red`, `bright_blue`, ...) from bottom to top, so
+they follow your terminal theme; two names split the bars into two colours.
 
 `ytdl_fallback_clients` is optional. yt-dlp normally chooses how to talk to
 YouTube. If mpv fails a track (YouTube's media server sometimes answers HTTP
@@ -104,6 +115,9 @@ listed here (yt-dlp `player_client` names), and skips it only if all fail. Which
 clients work changes over time, so edit this list instead of waiting for a
 release; `[]` keeps only the first retry.
 
+You do not have to edit this file by hand: press `,` in MPF for a settings
+screen that changes and saves every option above.
+
 Loading a URL saves it as the default playlist. The URL argument takes
 precedence. Cache files, thumbnails, playback state, and logs use
 `$XDG_CACHE_HOME/mpf` or `~/.cache/mpf`. Use `--config PATH` to select another
@@ -111,7 +125,7 @@ configuration file.
 
 ## 🎮 Controls
 
-Press `?` in MPF for the full in-app reference.
+Press `?` in MPF for the full in-app reference. Press `,` for settings.
 
 | Control | Action |
 | --- | --- |
