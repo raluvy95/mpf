@@ -44,9 +44,13 @@ with a scope. Use `feat:` for features, `fix:` for fixes, and `docs:`, `test:`,
 `refactor:`, `perf:`, `ci:`, or `chore:` where appropriate.
 
 Mark breaking changes with `!` and a `BREAKING CHANGE:` footer. Releases follow
-Semantic Versioning. Push a `vMAJOR.MINOR.PATCH` tag to build and publish a
-GitHub Release; its title matches the tag and its notes are generated from
-commits since the previous release.
+Semantic Versioning.
+
+Only Release Please creates tags and releases. It keeps a release pull request open
+with the next version and changelog; merging that pull request tags `vMAJOR.MINOR.PATCH`,
+publishes the GitHub Release and attaches the AppImage. **Do not create or push tags
+by hand**: the workflow does not handle them, and Release Please derives the next
+version from the latest tag, so a stray tag can corrupt its next release.
 
 ## Repository Hygiene
 

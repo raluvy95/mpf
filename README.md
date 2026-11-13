@@ -57,10 +57,11 @@ open a different one.
 
 ## 📦 AppImage
 
-CI builds an AppImage for every push. Non-release builds are available as
-temporary workflow artifacts. Release tags such as `v1.0.0` create a GitHub
-Release with the versioned AppImage attached and notes generated from commits
-since the previous release. The AppImage does not bundle `yt-dlp`: like `mpv`, it uses
+CI builds an AppImage for every pull request (except Release Please's own),
+available as a temporary workflow artifact, but not for ordinary commits to `main`. Merging the Release Please
+pull request publishes a GitHub Release with the versioned AppImage attached
+and notes generated from commits since the previous release. Tags and releases
+are created only by Release Please; do not push tags by hand. The AppImage does not bundle `yt-dlp`: like `mpv`, it uses
 the one installed on your system, so YouTube fixes arrive with your normal updates.
 Every release also has a `.sha256` file next to the AppImage; check a download with
 `sha256sum -c mpf-VERSION-x86_64.AppImage.sha256`. It detects corrupted or swapped files
