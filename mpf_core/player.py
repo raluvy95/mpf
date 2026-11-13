@@ -172,6 +172,7 @@ class BlessedMusicPlayer:
         self._input_mode = "none"  # "search" | "url" | "playlist" | "clients" | "rainbow" | "none"
         self._input_text = ""
         self._input_cursor = 0  # insertion point within the prompt text
+        self._input_error = ""  # why the open prompt rejected its URL; shown under the prompt
         self._time_pos = 0.0
         self._duration = 0.0
         self._last_state_save = 0.0
@@ -775,16 +776,20 @@ class BlessedMusicPlayer:
                         self._exit_search(played_idx=orig_idx)
                     else:
                         self._exit_search()
-                elif self._input_mode == "url" and self._input_buffer.strip():
+                elif self._input_mode == "url":
                     candidate = self._input_buffer.strip()
                     try:
+                        if not candidate:
+                            raise InvalidMediaURL("Enter a YouTube playlist or video URL")
                         validate_media_url(candidate)
                     except InvalidMediaURL as err:
-                        self._status_msg = str(err)
-                    else:
-                        if self._playlist_task and not self._playlist_task.done():
-                            self._playlist_task.cancel()
-                        self._playlist_task = asyncio.create_task(self.load_playlist(candidate))
+                        # Stay in the prompt with the text intact so the URL can be corrected; the status
+                        # line is hidden while a track plays, so the error is drawn under the prompt.
+                        self._input_error = str(err)
+                        return
+                    if self._playlist_task and not self._playlist_task.done():
+                        self._playlist_task.cancel()
+                    self._playlist_task = asyncio.create_task(self.load_playlist(candidate))
                 elif self._input_mode in ("playlist", "clients", "rainbow"):
                     self._apply_setting_input(self._input_mode, self._input_buffer)
                 self._input_mode = "none"
@@ -794,6 +799,7 @@ class BlessedMusicPlayer:
                     self._exit_search()
                 self._input_mode = "none"
                 self._input_buffer = ""
+                self._input_error = ""
             elif self._input_mode == "search" and key_name == "KEY_UP":
                 self._move_list_selection(-1)
             elif self._input_mode == "search" and key_name == "KEY_DOWN":
@@ -893,6 +899,7 @@ class BlessedMusicPlayer:
         elif key in ("o", "O"):
             self._input_mode = "url"
             self._input_buffer = ""
+            self._input_error = ""
         elif (self._vim_mode and key == "k") or (
             not self._vim_mode and key_name == "KEY_UP"
         ):
@@ -923,6 +930,7 @@ class BlessedMusicPlayer:
         """Change the prompt text in place, keeping the live search results in step."""
         self._input_text = text
         self._input_cursor = cursor
+        self._input_error = ""
         if self._input_mode == "search":
             self.queue.set_filter(text)
             self._selected_list_idx = 0
@@ -1235,6 +1243,7 @@ class BlessedMusicPlayer:
             self._input_mode,
             self._input_buffer,
             self._input_cursor,
+            self._input_error,
             self._is_paused,
             self._is_muted,
             self._is_loading_playlist,
@@ -1663,6 +1672,10 @@ class BlessedMusicPlayer:
             segments = self._prompt_segments(prompt_label, suffix, w - 1)
             out.append(self._move(0, row) + self._paint(segments, w - 1) + term.clear_eol)
             row += 1
+            if self._input_error and self._input_mode == "url":
+                error = self._paint([(term.bold_red, f" ✗ {self._input_error}")], w - 1)
+                out.append(self._move(0, row) + error + term.clear_eol)
+                row += 1
 
         # 5. Queue (ranked by fuzzy score when query active), with a one-line footer
         filtered = self.queue.filtered_tracks

@@ -1,5 +1,6 @@
 """Unit tests for mpf_core modules: models, fuzzy search, caching, Kitty previewer, and PipeWire visualizer."""
 
+import asyncio
 import json
 import os
 import re
@@ -1266,6 +1267,73 @@ class TestPromptCursor(unittest.TestCase):
         player = self._player()
         player._input_buffer = "prefilled"
         self.assertEqual(player._input_cursor, 9)
+
+
+class TestOpenPromptErrors(unittest.TestCase):
+    def _player(self):
+        import tempfile
+
+        from mpf_core.player import BlessedMusicPlayer
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        player = BlessedMusicPlayer(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
+        self.addCleanup(player.previewer.close)
+        return player
+
+    def _submit(self, player, text):
+        player._handle_key("o")
+        for char in text:
+            player._handle_key(char)
+        player._handle_key("\n")
+
+    def test_urls_that_are_not_a_playlist_or_video_keep_the_prompt_open_with_an_error(self):
+        player = self._player()
+        for url, expected in (
+            ("https://www.youtube.com/@someone", "URL is not a YouTube playlist or video"),
+            ("https://www.youtube.com/", "URL is not a YouTube playlist or video"),
+            ("https://example.com/watch?v=abc", "youtube.com or youtu.be"),
+            ("not a url", "youtube.com or youtu.be"),
+            ("", "Enter a YouTube playlist or video URL"),
+        ):
+            with self.subTest(url=url):
+                self._submit(player, url)
+                self.assertEqual(player._input_mode, "url")  # still open, so it can be corrected
+                self.assertEqual(player._input_buffer, url)
+                self.assertIn(expected, player._input_error)
+                player._handle_key(type("Key", (str,), {"name": "KEY_ESCAPE", "is_sequence": True})(""))
+                self.assertEqual((player._input_mode, player._input_error), ("none", ""))
+
+    def test_the_error_is_drawn_under_the_prompt_even_while_a_track_plays(self):
+        import io
+        from contextlib import redirect_stdout
+
+        from blessed import Terminal
+
+        player = self._player()
+        player.term = term = Terminal(force_styling=True)
+        player.queue.set_tracks([Track("1", "Song", 1.0, "Uploader")])  # the status line is hidden now
+        self._submit(player, "https://www.youtube.com/@someone")
+        out = io.StringIO()
+        with patch.object(type(term), "width", 80), patch.object(type(term), "height", 24), redirect_stdout(out):
+            player._render()
+        self.assertIn(term.bold_red(" ✗ URL is not a YouTube playlist or video"), out.getvalue())
+
+    def test_editing_clears_the_error_and_a_valid_url_closes_the_prompt(self):
+        player = self._player()
+        self._submit(player, "https://www.youtube.com/@someone")
+        self.assertTrue(player._input_error)
+        player._handle_key("\x7f")
+        self.assertEqual(player._input_error, "")
+        player._input_buffer = "https://www.youtube.com/playlist?list=PLabc"
+
+        async def go():
+            with patch.object(player, "load_playlist", new=MagicMock(return_value=asyncio.sleep(0))):
+                player._handle_key("\n")
+                await asyncio.sleep(0)
+
+        asyncio.run(go())
+        self.assertEqual((player._input_mode, player._input_buffer, player._input_error), ("none", "", ""))
 
 
 if __name__ == "__main__":
