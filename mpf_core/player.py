@@ -170,7 +170,8 @@ class BlessedMusicPlayer:
         self._selected_list_idx = 0
         self._scroll_offset = 0
         self._input_mode = "none"  # "search" | "url" | "playlist" | "clients" | "rainbow" | "none"
-        self._input_buffer = ""
+        self._input_text = ""
+        self._input_cursor = 0  # insertion point within the prompt text
         self._time_pos = 0.0
         self._duration = 0.0
         self._last_state_save = 0.0
@@ -797,18 +798,24 @@ class BlessedMusicPlayer:
                 self._move_list_selection(-1)
             elif self._input_mode == "search" and key_name == "KEY_DOWN":
                 self._move_list_selection(1)
-            elif key_name in ("KEY_BACKSPACE", "KEY_DELETE") or key == "\x7f" or key == "\x08":
-                self._input_buffer = self._input_buffer[:-1]
-                if self._input_mode == "search":
-                    self.queue.set_filter(self._input_buffer)
-                    self._selected_list_idx = 0
-                    self._scroll_offset = 0
+            elif key_name == "KEY_LEFT":
+                self._input_cursor = max(0, self._input_cursor - 1)
+            elif key_name == "KEY_RIGHT":
+                self._input_cursor = min(len(self._input_text), self._input_cursor + 1)
+            elif key_name == "KEY_HOME" or key == "\x01":
+                self._input_cursor = 0
+            elif key_name == "KEY_END" or key == "\x05":
+                self._input_cursor = len(self._input_text)
+            elif key_name == "KEY_DELETE":
+                text, cursor = self._input_text, self._input_cursor
+                self._edit_input(text[:cursor] + text[cursor + 1 :], cursor)
+            elif key_name == "KEY_BACKSPACE" or key == "\x7f" or key == "\x08":
+                text, cursor = self._input_text, self._input_cursor
+                if cursor:
+                    self._edit_input(text[: cursor - 1] + text[cursor:], cursor - 1)
             elif not getattr(key, "is_sequence", False) and len(key) == 1 and 32 <= ord(key) <= 126:
-                self._input_buffer += str(key)
-                if self._input_mode == "search":
-                    self.queue.set_filter(self._input_buffer)
-                    self._selected_list_idx = 0
-                    self._scroll_offset = 0
+                text, cursor = self._input_text, self._input_cursor
+                self._edit_input(text[:cursor] + str(key) + text[cursor:], cursor + 1)
             return
 
         if self._show_help:
@@ -901,6 +908,45 @@ class BlessedMusicPlayer:
                 self._play_index(orig_idx)
         elif key_name.startswith("MOUSE_"):
             self._handle_mouse(key)
+
+    @property
+    def _input_buffer(self) -> str:
+        return self._input_text
+
+    @_input_buffer.setter
+    def _input_buffer(self, value: str) -> None:
+        """Replace the prompt text; the cursor goes to the end, where typing continues."""
+        self._input_text = value
+        self._input_cursor = len(value)
+
+    def _edit_input(self, text: str, cursor: int) -> None:
+        """Change the prompt text in place, keeping the live search results in step."""
+        self._input_text = text
+        self._input_cursor = cursor
+        if self._input_mode == "search":
+            self.queue.set_filter(text)
+            self._selected_list_idx = 0
+            self._scroll_offset = 0
+
+    def _prompt_segments(self, label: str, suffix: str = "", width: Optional[int] = None) -> List[Tuple[Any, str]]:
+        """The prompt line with a reverse-video cursor at the insertion point.
+
+        When the text is wider than ``width`` it scrolls so the cursor stays visible.
+        """
+        term = self.term
+        prefix = f" {label}"
+        text, cursor = self._input_text, self._input_cursor
+        start = 0
+        if width is not None:
+            room = max(1, width - len(prefix))  # cells for the text and the cursor
+            start = max(0, cursor - room + 1)
+            text = text[start : start + room]
+        local = cursor - start
+        return [
+            (term.bold_yellow, prefix + text[:local]),
+            (term.bold_yellow_reverse, text[local : local + 1] or " "),
+            (term.bold_yellow, text[local + 1 :] + suffix),
+        ]
 
     def _handle_mouse(self, key: Any) -> None:
         """Handle progress-bar seeking, summary icons, track-list clicks, and wheel navigation."""
@@ -1188,6 +1234,7 @@ class BlessedMusicPlayer:
             self._scroll_offset,
             self._input_mode,
             self._input_buffer,
+            self._input_cursor,
             self._is_paused,
             self._is_muted,
             self._is_loading_playlist,
@@ -1418,7 +1465,7 @@ class BlessedMusicPlayer:
                 "clients": "clients (comma separated) ",
                 "rainbow": "colours, bottom to top (comma separated) ",
             }[self._input_mode]
-            lines.append(self._paint([(term.bold_yellow, f" {label}{self._input_buffer}█")], width))
+            lines.append(self._paint(self._prompt_segments(label, width=width), width))
             lines.append(self._paint([(term.dim, " Enter saves · Esc cancels")], width))
         elif self._settings_msg:
             lines.append(self._paint([(term.dim, f" {self._settings_msg}")], width))
@@ -1610,10 +1657,11 @@ class BlessedMusicPlayer:
         # 4. Input prompt
         if self._input_mode != "none":
             prompt_label = "/" if self._input_mode == "search" else "open "
-            input_text = f" {prompt_label}{self._input_buffer}█"
+            suffix = ""
             if self._input_mode == "search" and self._input_buffer:
-                input_text += f"   {len(self.queue.filtered_tracks)}/{len(self.queue.tracks)}"
-            out.append(self._move(0, row) + term.bold_yellow(input_text[: w - 1]) + term.clear_eol)
+                suffix = f"   {len(self.queue.filtered_tracks)}/{len(self.queue.tracks)}"
+            segments = self._prompt_segments(prompt_label, suffix, w - 1)
+            out.append(self._move(0, row) + self._paint(segments, w - 1) + term.clear_eol)
             row += 1
 
         # 5. Queue (ranked by fuzzy score when query active), with a one-line footer

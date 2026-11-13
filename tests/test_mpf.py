@@ -1173,6 +1173,101 @@ class TestNewVisualizerStyles(unittest.TestCase):
         self.assertEqual(player._rainbow_colors, ("cyan", "magenta"))
 
 
+class TestPromptCursor(unittest.TestCase):
+    def _player(self):
+        import tempfile
+
+        from mpf_core.player import BlessedMusicPlayer
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        player = BlessedMusicPlayer(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
+        self.addCleanup(player.previewer.close)
+        return player
+
+    @staticmethod
+    def _key(name):
+        return type("Key", (str,), {"name": name, "is_sequence": True})("")
+
+    def _type(self, player, text):
+        for char in text:
+            player._handle_key(char)
+
+    def test_cursor_moves_and_edits_happen_at_the_cursor(self):
+        player = self._player()
+        player._handle_key("o")
+        self._type(player, "helo")
+        player._handle_key(self._key("KEY_LEFT"))
+        self._type(player, "l")
+        self.assertEqual(player._input_buffer, "hello")
+        self.assertEqual(player._input_cursor, 4)
+        player._handle_key(self._key("KEY_HOME"))
+        self._type(player, ">")
+        self.assertEqual(player._input_buffer, ">hello")
+        player._handle_key(self._key("KEY_END"))
+        self.assertEqual(player._input_cursor, 6)
+
+    def test_backspace_deletes_before_and_delete_deletes_at_the_cursor(self):
+        player = self._player()
+        player._handle_key("o")
+        self._type(player, "abcd")
+        player._handle_key(self._key("KEY_LEFT"))
+        player._handle_key(self._key("KEY_LEFT"))
+        player._handle_key(self._key("KEY_BACKSPACE"))
+        self.assertEqual((player._input_buffer, player._input_cursor), ("acd", 1))
+        player._handle_key(self._key("KEY_DELETE"))
+        self.assertEqual((player._input_buffer, player._input_cursor), ("ad", 1))
+        player._handle_key(self._key("KEY_HOME"))
+        player._handle_key(self._key("KEY_BACKSPACE"))  # nothing before the cursor
+        player._handle_key(self._key("KEY_LEFT"))
+        self.assertEqual((player._input_buffer, player._input_cursor), ("ad", 0))
+        player._handle_key(self._key("KEY_END"))
+        player._handle_key(self._key("KEY_DELETE"))  # nothing after the cursor
+        self.assertEqual(player._input_buffer, "ad")
+
+    def test_cursor_stays_inside_the_text(self):
+        player = self._player()
+        player._handle_key("o")
+        self._type(player, "ab")
+        for _ in range(5):
+            player._handle_key(self._key("KEY_RIGHT"))
+        self.assertEqual(player._input_cursor, 2)
+        for _ in range(5):
+            player._handle_key(self._key("KEY_LEFT"))
+        self.assertEqual(player._input_cursor, 0)
+
+    def test_search_filter_follows_edits_in_the_middle(self):
+        player = self._player()
+        player.queue.set_tracks([Track("1", "alpha"), Track("2", "beta")])
+        player._handle_key("/")
+        self._type(player, "bta")
+        player._handle_key(self._key("KEY_LEFT"))
+        player._handle_key(self._key("KEY_LEFT"))
+        self._type(player, "e")
+        self.assertEqual([i for i, _ in player.queue.filtered_tracks], [1])
+
+    def test_prompt_draws_the_cursor_and_scrolls_to_keep_it_visible(self):
+        from blessed import Terminal
+
+        player = self._player()
+        player.term = term = Terminal(force_styling=True)
+        player._handle_key("o")
+        self._type(player, "abc")
+        player._handle_key(self._key("KEY_LEFT"))
+        line = player._paint(player._prompt_segments("open "))
+        self.assertEqual(line, term.bold_yellow(" open ab") + term.bold_yellow_reverse("c"))
+        player._handle_key(self._key("KEY_END"))
+        plain = term.strip_seqs(player._paint(player._prompt_segments("open ", width=8)))
+        self.assertEqual(plain, " open c ")  # 2 cells: the end of "abc" and the cursor stay in view
+        player._input_buffer = "x" * 40
+        self.assertLessEqual(len(term.strip_seqs(player._paint(player._prompt_segments("open ", width=20)))), 20)
+
+    def test_replacing_the_text_puts_the_cursor_at_its_end(self):
+        player = self._player()
+        player._input_buffer = "prefilled"
+        self.assertEqual(player._input_cursor, 9)
+
+
 if __name__ == "__main__":
     unittest.main()
 
