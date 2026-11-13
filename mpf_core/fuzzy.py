@@ -8,6 +8,9 @@ if TYPE_CHECKING:
     from mpf_core.models import Track
 
 
+_WORD_BOUNDARIES = frozenset(" -_./([{:|")
+
+
 def fuzzy_score(pattern: str, text: str) -> Optional[int]:
     """Calculate fuzzy match score between pattern and text.
 
@@ -17,51 +20,42 @@ def fuzzy_score(pattern: str, text: str) -> Optional[int]:
     pattern = pattern.lower()
     text_lower = text.lower()
     p_len = len(pattern)
-    t_len = len(text_lower)
 
     if not pattern:
         return 0
-    if p_len > t_len:
+    if p_len > len(text_lower):
         return None
+    if len(text_lower) != len(text):
+        # A few characters change length when lowercased ("İ" becomes two), so the positions found in
+        # text_lower no longer line up with text. Compare case-insensitively rather than index past it.
+        text = text_lower
+
+    # Leftmost greedy match of each pattern character; str.find runs in C, so texts that do not
+    # match are rejected quickly and matching ones are only scored at the p_len matched positions.
+    positions: List[int] = []
+    position = -1
+    for char in pattern:
+        position = text_lower.find(char, position + 1)
+        if position < 0:
+            return None
+        positions.append(position)
 
     score = 0
-    pattern_idx = 0
     prev_match_idx = -2
-    first_match_idx = -1
-
-    word_boundaries = {" ", "-", "_", ".", "/", "(", "[", "{", ":", "|"}
-
-    for text_idx, char in enumerate(text_lower):
-        if pattern_idx < p_len and char == pattern[pattern_idx]:
-            if first_match_idx == -1:
-                first_match_idx = text_idx
-
-            # Base match points
-            score += 10
-
-            # Consecutive character bonus
-            if text_idx == prev_match_idx + 1:
-                score += 15
-
-            # Word boundary bonus (start of word / token)
-            if text_idx == 0 or text[text_idx - 1] in word_boundaries:
-                score += 20
-
-            # Exact case match bonus
-            if text[text_idx] == pattern[pattern_idx]:
-                score += 5
-
-            prev_match_idx = text_idx
-            pattern_idx += 1
-
-    # All pattern chars must be matched
-    if pattern_idx < p_len:
-        return None
+    for pattern_char, text_idx in zip(pattern, positions):
+        score += 10  # base match points
+        if text_idx == prev_match_idx + 1:
+            score += 15  # consecutive character bonus
+        if text_idx == 0 or text[text_idx - 1] in _WORD_BOUNDARIES:
+            score += 20  # start of a word / token
+        if text[text_idx] == pattern_char:
+            score += 5  # exact case match
+        prev_match_idx = text_idx
 
     # Penalty for unmatched text length and start offset
-    span_len = prev_match_idx - first_match_idx + 1
+    span_len = prev_match_idx - positions[0] + 1
     score -= (span_len - p_len) * 2
-    score -= first_match_idx * 2
+    score -= positions[0] * 2
 
     return score
 

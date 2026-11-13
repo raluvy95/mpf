@@ -127,6 +127,27 @@ class TestRepeatMode(unittest.TestCase):
 
 
 class TestFuzzySearch(unittest.TestCase):
+    def test_fuzzy_scores_match_the_original_implementation(self):
+        # Reference values computed with the character-by-character scorer that str.find replaced.
+        for pattern, text, expected in (
+            ("creep", "Radiohead - Creep", 126),
+            ("CREEP", "Radiohead - Creep", 126),
+            ("rhc", "Radiohead - Creep", 55),
+            ("pcr", "Radiohead - Creep", None),
+            ("zzz", "Radiohead - Creep", None),
+            ("", "x", 0),
+            ("toolong", "ab", None),
+            ("ab", "a_b.c", 68),
+        ):
+            with self.subTest(pattern=pattern, text=text):
+                self.assertEqual(fuzzy_score(pattern, text), expected)
+
+    def test_fuzzy_score_survives_characters_that_change_length_when_lowercased(self):
+        # "İ".lower() is two characters, which used to push the match positions past the end of the title.
+        self.assertIsNotNone(fuzzy_score("i", "İstanbul"))
+        self.assertIsNotNone(fuzzy_score("stan", "İstanbul"))
+        self.assertEqual([i for i, _ in fuzzy_filter_tracks([Track("1", "İstanbul", 1.0, "x")], "bul")], [0])
+
     def test_fuzzy_score_exact_and_subsequence(self):
         self.assertIsNotNone(fuzzy_score("creep", "Radiohead - Creep"))
         self.assertIsNotNone(fuzzy_score("radcrp", "Radiohead - Creep"))
