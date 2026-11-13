@@ -13,7 +13,7 @@ from mpf_core.metadata import RedactingFilter
 from mpf_core.paths import CACHE_DIR, CONFIG_FILE, LOG_FILE
 
 DEFAULT_PLAYLIST_URL = ""
-__version__ = "1.1.0"  # x-release-please-version
+__version__ = "1.2.0"  # x-release-please-version
 
 
 def parse_cli_args(args: Optional[List[str]] = None) -> argparse.Namespace:
