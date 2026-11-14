@@ -1930,7 +1930,9 @@ class BlessedMusicPlayer:
         else:
             lines = self._settings_lines(width) if self._show_settings else self._help_lines(width)
         for row, line in enumerate(lines[: term.height]):
-            output.append(self._move(0, row) + "  " + line + term.clear_eol)
+            # The dialog repaints over the dashboard, so its two margin columns are blanked too.
+            margin = self._move(0, row) + "  " if self._input_mode == "url" else self._move(2, row)
+            output.append(margin + line + term.clear_eol)
         print("".join(output), end="", flush=True)
         if placements:
             self.previewer.render_many(placements)
