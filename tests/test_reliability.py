@@ -1301,3 +1301,23 @@ class SavedPlaylistTests(unittest.TestCase):
             (item,) = list_saved_playlists(cache_file)
             self.assertEqual((item.name, item.titled, item.count, item.cached_at), ("Chill", True, 2, before))
             self.assertFalse(set_playlist_title("https://youtu.be/none", "x", cache_file))
+
+
+    def test_a_tampered_cache_cannot_put_escape_sequences_or_bad_urls_in_the_list(self):
+        from mpf_core.cache import _write_binary_cache, list_saved_playlists
+
+        good = "https://www.youtube.com/playlist?list=GOOD"
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_file = os.path.join(tmp, "playlists.mpk.zst")
+            row = [["id", "T", 10, "U"]]
+            _write_binary_cache(
+                {
+                    good: {"cached_at": 2.0, "count": 1, "title": "\x1b[2J\x1b]52;c;aGk=\x07Mix", "tracks": row},
+                    "https://www.youtube.com/playlist?list=X\x1b]0;PWNED\x07": {"cached_at": 1.0, "tracks": row},
+                    "https://evil.example/playlist?list=X": {"cached_at": 1.0, "tracks": row},
+                },
+                cache_file,
+            )
+            (item,) = list_saved_playlists(cache_file)
+            self.assertEqual((item.url, item.name), (good, "[2J]52;c;aGk=Mix"))
+            self.assertNotIn("\x1b", item.name + item.url)

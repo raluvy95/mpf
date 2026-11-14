@@ -24,6 +24,8 @@ from urllib.parse import parse_qs, urlparse
 import msgpack
 import zstandard as zstd
 
+from mpf_core.fetcher import InvalidMediaURL, validate_media_url
+from mpf_core.metadata import TITLE_LIMIT, clean_text
 from mpf_core.models import Track
 from mpf_core.paths import PLAYBACK_CACHE_FILE, PLAYLIST_CACHE_FILE
 
@@ -266,6 +268,10 @@ def list_saved_playlists(cache_file: str = PLAYLIST_CACHE_FILE) -> List[SavedPla
     for url, entry in cache.items():
         if not isinstance(url, str) or not isinstance(entry, dict):
             continue
+        try:
+            validate_media_url(url)  # the cache is untrusted: the URL is shown and may be opened
+        except InvalidMediaURL:
+            continue
         rows = entry.get("tracks")
         if not isinstance(rows, list) or not rows:
             continue
@@ -274,8 +280,8 @@ def list_saved_playlists(cache_file: str = PLAYLIST_CACHE_FILE) -> List[SavedPla
             cached_at = float(entry.get("cached_at", 0))
         except (TypeError, ValueError, IndexError):
             continue
-        title = entry.get("title")
-        name = title if isinstance(title, str) and title else _fallback_playlist_name(url, cover, len(rows))
+        title = clean_text(entry.get("title"), TITLE_LIMIT)
+        name = title or _fallback_playlist_name(url, cover, len(rows))
         saved.append(SavedPlaylist(url, name, len(rows), cover, cached_at, titled=name == title))
     saved.sort(key=lambda item: item.cached_at, reverse=True)
     return saved
