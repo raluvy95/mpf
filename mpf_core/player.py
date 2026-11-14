@@ -56,7 +56,7 @@ from mpf_core.config import (
 from mpf_core.fetcher import (
     InvalidMediaURL,
     PlaylistFetchError,
-    fetch_playlist_tracks,
+    fetch_playlist,
     validate_media_url,
 )
 from mpf_core.metadata import clean_text, redact_urls
@@ -500,7 +500,8 @@ class BlessedMusicPlayer:
         self._is_loading_playlist = True
         self._status_msg = "Fetching playlist..." if not cached else "Syncing playlist..."
         try:
-            tracks = await loop.run_in_executor(None, fetch_playlist_tracks, url)
+            playlist = await loop.run_in_executor(None, fetch_playlist, url)
+            tracks = playlist.tracks
             if not tracks:
                 if not cached:
                     self._status_msg = "No tracks found."
@@ -513,7 +514,7 @@ class BlessedMusicPlayer:
             if 0 <= self._selected_list_idx < len(filtered):
                 selected_track = filtered[self._selected_list_idx][1]
 
-            cache_saved = save_cached_playlist(url, tracks)
+            cache_saved = save_cached_playlist(url, tracks, title=playlist.title)
             if not save_default_playlist(url, self.config_file):
                 logger.warning("Unable to persist loaded playlist %s", url)
             runtime_tracks = list(tracks)

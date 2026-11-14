@@ -25,7 +25,7 @@ from mpf_core.cache import (
     save_cached_playlist,
     save_playback_state,
 )
-from mpf_core.fetcher import InvalidMediaURL, PlaylistFetchError, validate_media_url
+from mpf_core.fetcher import InvalidMediaURL, Playlist, PlaylistFetchError, validate_media_url
 from mpf_core.models import RepeatMode, Track, TrackQueue
 from mpf_core.player import BlessedMusicPlayer
 from mpf_core.previewer import KittyPreviewer
@@ -104,7 +104,7 @@ class TestPlaylistRefresh(unittest.IsolatedAsyncioTestCase):
             patch("mpf_core.player.load_cached_playlist", return_value=old),
             patch("mpf_core.player.load_playback_state", return_value=saved),
             patch("mpf_core.player.is_playlist_cache_stale", return_value=True),
-            patch("mpf_core.player.fetch_playlist_tracks", return_value=fresh),
+            patch("mpf_core.player.fetch_playlist", return_value=Playlist("", fresh)),
             patch("mpf_core.player.save_cached_playlist", return_value=True),
             patch("mpf_core.player.save_default_playlist", return_value=True),
         ):
@@ -121,7 +121,7 @@ class TestPlaylistRefresh(unittest.IsolatedAsyncioTestCase):
             patch("mpf_core.player.load_cached_playlist", return_value=old),
             patch("mpf_core.player.load_playback_state", return_value=None),
             patch("mpf_core.player.is_playlist_cache_stale", return_value=True),
-            patch("mpf_core.player.fetch_playlist_tracks", side_effect=PlaylistFetchError("network down")),
+            patch("mpf_core.player.fetch_playlist", side_effect=PlaylistFetchError("network down")),
             patch("mpf_core.player.save_default_playlist", return_value=True),
         ):
             await player.load_playlist(PLAYLIST_URL)
@@ -134,7 +134,7 @@ class TestPlaylistRefresh(unittest.IsolatedAsyncioTestCase):
         with (
             patch("mpf_core.player.load_cached_playlist", return_value=None),
             patch("mpf_core.player.is_playlist_cache_stale", return_value=True),
-            patch("mpf_core.player.fetch_playlist_tracks", side_effect=PlaylistFetchError("network down")),
+            patch("mpf_core.player.fetch_playlist", side_effect=PlaylistFetchError("network down")),
             patch("mpf_core.player.save_default_playlist", return_value=True) as save_default,
         ):
             await player.load_playlist(PLAYLIST_URL)
@@ -1242,3 +1242,29 @@ class TestPerformanceGuards(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SavedPlaylistTests(unittest.TestCase):
+    def test_lists_newest_first_with_titles_and_fallback_names(self):
+        from mpf_core.cache import list_saved_playlists
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_file = os.path.join(tmp, "playlists.mpk.zst")
+            old = "https://www.youtube.com/playlist?list=OLD"
+            new = "https://www.youtube.com/playlist?list=NEW"
+            self.assertTrue(save_cached_playlist(old, [Track("a", "A"), Track("b", "B")], cache_file))
+            time.sleep(0.01)
+            self.assertTrue(save_cached_playlist(new, [Track("c", "C")], cache_file, title="Chill"))
+            saved = list_saved_playlists(cache_file)
+            self.assertEqual([item.name for item in saved], ["Chill", "Playlist OLD"])
+            self.assertEqual(saved[1].count, 2)
+            self.assertEqual(saved[1].cover.id, "a")
+            # A refresh without a title keeps the name saved before.
+            self.assertTrue(save_cached_playlist(new, [Track("c", "C")], cache_file))
+            self.assertEqual(list_saved_playlists(cache_file)[0].name, "Chill")
+
+    def test_missing_cache_lists_nothing(self):
+        from mpf_core.cache import list_saved_playlists
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(list_saved_playlists(os.path.join(tmp, "none")), [])

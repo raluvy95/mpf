@@ -8,7 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 from urllib.parse import parse_qs, urlparse
 
 from mpf_core.metadata import ID_LIMIT, NAME_LIMIT, TITLE_LIMIT, URL_LIMIT, clean_text, redact_urls
@@ -118,8 +118,18 @@ def _extract_info_with_module(url: str, ydl_opts: Optional[Dict[str, Any]]) -> A
         raise PlaylistFetchError(f"Network error while retrieving URL: {clean_text(redact_urls(str(err)))}") from err
 
 
+class Playlist(NamedTuple):
+    title: str
+    tracks: List[Track]
+
+
 def fetch_playlist_tracks(url: str, ydl_opts: Optional[Dict[str, Any]] = None) -> List[Track]:
-    """Extract tracks from a YouTube playlist or single video URL.
+    """Extract just the tracks of a YouTube playlist or single video URL; see :func:`fetch_playlist`."""
+    return fetch_playlist(url, ydl_opts).tracks
+
+
+def fetch_playlist(url: str, ydl_opts: Optional[Dict[str, Any]] = None) -> Playlist:
+    """Extract the title and tracks of a YouTube playlist or single video URL.
 
     Prefers the ``yt-dlp`` executable on PATH (always as current as the user keeps it, and the very
     one mpv plays with); falls back to the bundled/installed ``yt_dlp`` module when there is none, or
@@ -178,4 +188,4 @@ def fetch_playlist_tracks(url: str, ydl_opts: Optional[Dict[str, Any]] = None) -
         )
     if skipped:
         logger.info("Skipped %d unavailable playlist entries", skipped)
-    return tracks
+    return Playlist(clean_text(info.get("title"), TITLE_LIMIT), tracks)

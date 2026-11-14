@@ -19,6 +19,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Iterator, List, Optional
+from urllib.parse import parse_qs, urlparse
 
 import msgpack
 import zstandard as zstd
@@ -210,14 +211,23 @@ def load_cached_playlist(url: str, cache_file: str = PLAYLIST_CACHE_FILE) -> Opt
     return None
 
 
-def save_cached_playlist(url: str, tracks: List[Track], cache_file: str = PLAYLIST_CACHE_FILE) -> bool:
-    """Save playlist tracks to binary cache as compact positional tuples."""
+def save_cached_playlist(
+    url: str, tracks: List[Track], cache_file: str = PLAYLIST_CACHE_FILE, title: str = ""
+) -> bool:
+    """Save playlist tracks to binary cache as compact positional tuples.
+
+    ``title`` is the playlist's own name; without one, the name saved earlier is kept.
+    """
     try:
         with _cache_lock(cache_file, exclusive=True):
             cache: Dict[str, Any] = _read_binary_cache_unlocked(cache_file) or {}
+            previous = cache.get(url)
+            if not title and isinstance(previous, dict) and isinstance(previous.get("title"), str):
+                title = previous["title"]
             cache[url] = {
                 "cached_at": time.time(),
                 "count": len(tracks),
+                "title": title,
                 "tracks": [list(t.to_cache_tuple()) for t in tracks],
             }
             _write_binary_cache(cache, cache_file)
@@ -225,6 +235,49 @@ def save_cached_playlist(url: str, tracks: List[Track], cache_file: str = PLAYLI
     except (OSError, TypeError, ValueError, zstd.ZstdError) as err:
         logger.error("Unable to save playlist cache %s: %s", cache_file, err)
         return False
+
+
+@dataclass
+class SavedPlaylist:
+    """A playlist kept in the cache, as listed by the open dialog."""
+    url: str
+    name: str
+    count: int
+    cover: Optional[Track]  # first track: its thumbnail stands in for the playlist's own
+    cached_at: float
+
+
+def _fallback_playlist_name(url: str, first: Optional[Track], count: int) -> str:
+    """Name for a cache entry saved before titles were kept."""
+    if count == 1 and first:
+        return first.title
+    try:
+        list_id = parse_qs(urlparse(url).query).get("list", [""])[0]
+    except ValueError:
+        list_id = ""
+    return f"Playlist {list_id}" if list_id else url
+
+
+def list_saved_playlists(cache_file: str = PLAYLIST_CACHE_FILE) -> List[SavedPlaylist]:
+    """Every cached playlist, most recently synced first."""
+    cache = _read_binary_cache(cache_file) or {}
+    saved: List[SavedPlaylist] = []
+    for url, entry in cache.items():
+        if not isinstance(url, str) or not isinstance(entry, dict):
+            continue
+        rows = entry.get("tracks")
+        if not isinstance(rows, list) or not rows:
+            continue
+        try:
+            cover: Optional[Track] = Track.from_cache_tuple(rows[0])
+            cached_at = float(entry.get("cached_at", 0))
+        except (TypeError, ValueError, IndexError):
+            continue
+        title = entry.get("title")
+        name = title if isinstance(title, str) and title else _fallback_playlist_name(url, cover, len(rows))
+        saved.append(SavedPlaylist(url, name, len(rows), cover, cached_at))
+    saved.sort(key=lambda item: item.cached_at, reverse=True)
+    return saved
 
 
 # ── Playback state ────────────────────────────────────────────────────────────
