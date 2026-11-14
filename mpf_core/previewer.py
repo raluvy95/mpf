@@ -15,7 +15,7 @@ import time
 import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
-from typing import Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from mpf_core.models import Track
 from mpf_core.paths import THUMBS_CACHE_DIR
@@ -42,7 +42,7 @@ class KittyPreviewer:
         self.thumbs_dir = thumbs_dir
         self.fallback_icon = fallback_icon
         self.has_kitty = shutil.which("kitty") is not None
-        self._current_rendered: Optional[Tuple[str, int, int, int, int]] = None
+        self._current_rendered: Optional[Tuple[Tuple[str, int, int, int, int], ...]] = None
         self.max_age_seconds = max_age_seconds
         self.max_cache_bytes = max_cache_bytes
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mpf-thumbnail")
@@ -162,21 +162,36 @@ class KittyPreviewer:
 
     def render(self, track: Optional[Track], x: int, y: int, width: int, height: int) -> None:
         """Render image in terminal cell rect using kitty icat."""
-        if not self.has_kitty or width <= 0 or height <= 0:
-            return
+        self.render_many([(track, x, y, width, height)])
 
-        img_path = self.get_cached_image_path(track)
-        if not img_path or not os.path.exists(img_path):
+    def render_many(self, placements: Sequence[Tuple[Optional[Track], int, int, int, int]]) -> None:
+        """Render several thumbnails, each as (track, x, y, width, height) in cells.
+
+        Nothing is drawn again while the same images sit at the same places, and a track whose
+        thumbnail has not downloaded yet is left out until it has.
+        """
+        if not self.has_kitty:
+            return
+        wanted: List[Tuple[str, int, int, int, int]] = []
+        for track, x, y, width, height in placements:
+            if width <= 0 or height <= 0:
+                continue
+            img_path = self.get_cached_image_path(track)
+            if img_path and os.path.exists(img_path):
+                wanted.append((img_path, x, y, width, height))
+        state_key = tuple(wanted)
+        if not wanted:
             self.clear()
             return
-
-        state_key = (img_path, x, y, width, height)
         if self._current_rendered == state_key:
             return
-
         if self._current_rendered:
             self.clear()
         self._current_rendered = state_key
+        for img_path, x, y, width, height in wanted:
+            self._icat(img_path, x, y, width, height)
+
+    def _icat(self, img_path: str, x: int, y: int, width: int, height: int) -> None:
         try:
             cmd = [
                 "kitty",
