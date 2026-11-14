@@ -26,7 +26,9 @@ from mpf_core import daemon
 from mpf_core.buffering import AdaptiveReadahead
 from mpf_core.cache import (
     PlaybackState,
+    SavedPlaylist,
     is_playlist_cache_stale,
+    list_saved_playlists,
     load_cached_playlist,
     load_playback_state,
     save_cached_playlist,
@@ -194,6 +196,9 @@ class BlessedMusicPlayer:
         self._input_text = ""
         self._input_cursor = 0  # insertion point within the prompt text
         self._input_error = ""  # why the open prompt rejected its URL; shown under the prompt
+        self._open_saved: List[SavedPlaylist] = []  # playlists the open dialog offers, newest first
+        self._open_idx = 0  # highlighted saved playlist
+        self._open_scroll = 0  # first visible saved playlist
         self._time_pos = 0.0
         self._duration = 0.0
         self._last_state_save = 0.0
@@ -979,6 +984,8 @@ class BlessedMusicPlayer:
                         self._exit_search()
                 elif self._input_mode == "url":
                     candidate = self._input_buffer.strip()
+                    if not candidate and 0 <= self._open_idx < len(self._open_saved):
+                        candidate = self._open_saved[self._open_idx].url  # nothing typed: the chosen playlist
                     try:
                         if not candidate:
                             raise InvalidMediaURL("Enter a YouTube playlist or video URL")
@@ -1005,6 +1012,12 @@ class BlessedMusicPlayer:
                 self._move_list_selection(-1)
             elif self._input_mode == "search" and key_name == "KEY_DOWN":
                 self._move_list_selection(1)
+            elif self._input_mode == "url" and key_name in ("KEY_UP", "KEY_DOWN", "KEY_TAB", "KEY_BTAB"):
+                step = {"KEY_UP": -self._open_columns(), "KEY_DOWN": self._open_columns(), "KEY_TAB": 1, "KEY_BTAB": -1}
+                self._move_open_selection(step[key_name])
+            elif self._input_mode == "url" and key in ("o", "O") and not self._input_text:
+                self._input_mode = "none"  # the key that opened the dialog also hides it while nothing is typed
+                self._input_error = ""
             elif key_name == "KEY_LEFT":
                 self._input_cursor = max(0, self._input_cursor - 1)
             elif key_name == "KEY_RIGHT":
@@ -1101,6 +1114,8 @@ class BlessedMusicPlayer:
             self._input_mode = "url"
             self._input_buffer = ""
             self._input_error = ""
+            self._open_saved = list_saved_playlists()
+            self._open_idx = self._open_scroll = 0
         elif (self._vim_mode and key == "k") or (
             not self._vim_mode and key_name == "KEY_UP"
         ):
@@ -1156,6 +1171,65 @@ class BlessedMusicPlayer:
             (term.bold_yellow_reverse, text[local : local + 1] or " "),
             (term.bold_yellow, text[local + 1 :] + suffix),
         ]
+
+    def _open_columns(self) -> int:
+        """Saved playlists per row: one for the list view."""
+        return 1
+
+    def _open_visible_rows(self, height: int) -> int:
+        """Saved-playlist rows that fit under the dialog header and above its hint."""
+        return max(1, height - self.OPEN_HEADER_ROWS - 1)
+
+    def _move_open_selection(self, step: int) -> None:
+        """Move the highlighted saved playlist by ``step`` items, stopping at either end."""
+        if not self._open_saved:
+            return
+        self._open_idx = max(0, min(len(self._open_saved) - 1, self._open_idx + step))
+        columns = self._open_columns()
+        row = self._open_idx // columns
+        visible = self._open_visible_rows(self.term.height)
+        first = self._open_scroll // columns
+        if row < first:
+            first = row
+        elif row >= first + visible:
+            first = row - visible + 1
+        self._open_scroll = first * columns
+
+    OPEN_HEADER_ROWS = 6  # prompt, hint, error or blank, blank, "Saved playlists:", blank
+
+    def _open_lines(self, width: int, height: int) -> List[str]:
+        """The open dialog: the URL prompt, then the saved playlists as a list."""
+        term = self.term
+        typing = bool(self._input_text)
+        hide = [(term.dim, " press ")] + self._keycap_segments("Esc" if typing else "o", "yellow") + [(term.dim, " to hide")]
+        lines = [
+            self._paint(self._prompt_segments("open: ", "_" * width, width), width),
+            self._paint(hide, width),
+            self._paint([(term.bold_red, f" ✗ {self._input_error}")], width) if self._input_error else "",
+            "",
+            self._paint([(term.bold_white, " Saved playlists:")], width),
+            "",
+        ]
+        if not self._open_saved:
+            lines.append(self._paint([(term.dim, " Nothing saved yet: playlists you open are kept here.")], width))
+            return lines
+        visible = self._open_visible_rows(height)
+        for index in range(self._open_scroll, min(len(self._open_saved), self._open_scroll + visible)):
+            item = self._open_saved[index]
+            selected = index == self._open_idx and not typing  # typed text is what Enter opens
+            lines.append(
+                self._paint(
+                    [
+                        (term.bold_yellow, " ➤ " if selected else "   "),
+                        (term.bold_reverse if selected else term.bold, item.name),
+                        (term.dim, f" - {item.url}"),
+                    ],
+                    width,
+                )
+            )
+        lines += [""] * max(0, height - 1 - len(lines))
+        lines.append(self._paint([(term.dim, " ↑↓ choose · Enter opens · Esc closes")], width))
+        return lines
 
     def _handle_mouse(self, key: Any) -> None:
         """Handle progress-bar seeking, summary icons, track-list clicks, and wheel navigation."""
@@ -1445,6 +1519,8 @@ class BlessedMusicPlayer:
             self._input_buffer,
             self._input_cursor,
             self._input_error,
+            self._open_idx,
+            self._open_scroll,
             self._is_paused,
             self._is_muted,
             self._is_loading_playlist,
@@ -1785,7 +1861,10 @@ class BlessedMusicPlayer:
         term = self.term
         width = max(0, term.width - 3)
         output = [term.clear + term.home]
-        lines = self._settings_lines(width) if self._show_settings else self._help_lines(width)
+        if self._input_mode == "url":
+            lines = self._open_lines(width, term.height)
+        else:
+            lines = self._settings_lines(width) if self._show_settings else self._help_lines(width)
         for row, line in enumerate(lines[: term.height]):
             output.append(self._move(2, row) + line + term.clear_eol)
         print("".join(output), end="", flush=True)
@@ -1823,7 +1902,7 @@ class BlessedMusicPlayer:
             print(term.home + term.red("Terminal window too small!"), end="", flush=True)
             return
 
-        if self._show_help or self._show_settings:
+        if self._show_help or self._show_settings or self._input_mode == "url":
             if not self._help_visible:
                 self._help_visible = True
                 self.previewer.clear()
@@ -1924,17 +2003,13 @@ class BlessedMusicPlayer:
 
         # 4. Input prompt
         if self._input_mode != "none":
-            prompt_label = "/" if self._input_mode == "search" else "open "
+            prompt_label = "/"
             suffix = ""
             if self._input_mode == "search" and self._input_buffer:
                 suffix = f"   {len(self.queue.filtered_tracks)}/{len(self.queue.tracks)}"
             segments = self._prompt_segments(prompt_label, suffix, w - 1)
             out.append(self._move(0, row) + self._paint(segments, w - 1) + term.clear_eol)
             row += 1
-            if self._input_error and self._input_mode == "url":
-                error = self._paint([(term.bold_red, f" ✗ {self._input_error}")], w - 1)
-                out.append(self._move(0, row) + error + term.clear_eol)
-                row += 1
 
         # 5. Queue (ranked by fuzzy score when query active), with a one-line footer
         filtered = self.queue.filtered_tracks

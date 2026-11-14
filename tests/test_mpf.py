@@ -1407,6 +1407,103 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TestOpenDialog(unittest.TestCase):
+    URLS = [f"https://www.youtube.com/playlist?list=P{n}" for n in range(3)]
+
+    def _player(self):
+        import tempfile
+        from unittest.mock import patch
+
+        from mpf_core.cache import SavedPlaylist
+        from mpf_core.models import Track
+        from mpf_core.player import BlessedMusicPlayer
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        player = BlessedMusicPlayer(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
+        self.addCleanup(player.previewer.close)
+        saved = [SavedPlaylist(url, f"Mix {n}", 5, Track("t", "T"), 0.0) for n, url in enumerate(self.URLS)]
+        patcher = patch("mpf_core.player.list_saved_playlists", return_value=saved)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        player.load_playlist = lambda url: self._opened.append(url) or asyncio.sleep(0)  # type: ignore[method-assign]
+        self._opened: list[str] = []
+        return player
+
+    @staticmethod
+    def _key(name):
+        return type("Key", (str,), {"name": name, "is_sequence": True})("")
+
+    def test_o_hides_the_dialog_only_while_nothing_is_typed(self):
+        player = self._player()
+        player._handle_key("o")
+        self.assertEqual(player._input_mode, "url")
+        player._handle_key("o")
+        self.assertEqual(player._input_mode, "none")
+        player._handle_key("o")
+        player._handle_key("h")
+        player._handle_key("o")  # part of a URL now
+        self.assertEqual((player._input_mode, player._input_buffer), ("url", "ho"))
+
+    def test_arrows_move_the_highlight_and_enter_opens_the_chosen_playlist(self):
+        async def scenario():
+            player = self._player()
+            player._handle_key("o")
+            player._handle_key(self._key("KEY_DOWN"))
+            player._handle_key(self._key("KEY_DOWN"))
+            player._handle_key(self._key("KEY_DOWN"))  # stops at the last one
+            player._handle_key(self._key("KEY_UP"))
+            self.assertEqual(player._open_idx, 1)
+            player._handle_key("\n")
+            await asyncio.sleep(0)
+            return player
+
+        player = asyncio.run(scenario())
+        self.assertEqual(self._opened, [self.URLS[1]])
+        self.assertEqual(player._input_mode, "none")
+
+    def test_typed_text_wins_over_the_highlighted_playlist(self):
+        async def scenario():
+            player = self._player()
+            player._handle_key("o")
+            for char in "https://youtu.be/abc":
+                player._handle_key(char)
+            player._handle_key("\n")
+            await asyncio.sleep(0)
+
+        asyncio.run(scenario())
+        self.assertEqual(self._opened, ["https://youtu.be/abc"])
+
+    def test_dialog_screen_shows_prompt_hint_and_playlists(self):
+        player = self._player()
+        player._handle_key("o")
+        player._move_open_selection(1)
+        lines = [self._strip(line) for line in player._open_lines(80, 20)]
+        self.assertTrue(lines[0].startswith(" open: "))
+        self.assertIn("press [o] to hide", lines[1])
+        self.assertIn("Saved playlists:", lines[4])
+        self.assertTrue(lines[6].startswith("   Mix 0 - " + self.URLS[0]))
+        self.assertTrue(lines[7].startswith(" \u27a4 Mix 1 - " + self.URLS[1]))
+        player._handle_key("h")
+        self.assertIn("press [Esc] to hide", self._strip(player._open_lines(80, 20)[1]))
+
+    def test_long_lists_scroll_to_keep_the_highlight_visible(self):
+        player = self._player()
+        player._handle_key("o")
+        height = player.OPEN_HEADER_ROWS + 3  # two playlist rows and the hint
+        player.term = type("T", (), {"height": height})()  # only the height is read while moving
+        player._move_open_selection(2)
+        self.assertEqual(player._open_scroll, 1)
+        player._move_open_selection(-2)
+        self.assertEqual(player._open_scroll, 0)
+
+    @staticmethod
+    def _strip(text):
+        import re
+
+        return re.sub(r"\x1b\[[0-9;]*m|\x1b\(B", "", text)
+
+
 class TestYtdlFallbackConfig(unittest.TestCase):
     def _load(self, content):
         import tempfile
