@@ -53,7 +53,8 @@ python3.14 -m venv .venv
 ```
 
 Run MPF without a URL to load your saved default playlist, or press `o` to
-open a different one.
+open a different one: type or paste a URL, or choose one of your saved playlists with the arrows (`Tab` also
+steps through them) and press `Enter`. Press `o` again, or `Esc`, to hide the dialog.
 
 ## 📦 AppImage
 
@@ -98,11 +99,16 @@ Configuration defaults to `$XDG_CONFIG_HOME/mpf/config.json` or
   "show_visualizer": true,
   "vim_mode": true,
   "bar_position": "bottom",
+  "open_view": "list",
   "visualizer_color": "plain",
   "rainbow_colors": ["blue", "cyan", "green", "yellow", "red"],
   "ytdl_fallback_clients": ["tv_simply", "mweb"]
 }
 ```
+
+`open_view` (`list` or `thumbnails`) sets how the open dialog shows saved playlists: one per line, or as a grid of
+cover thumbnails. The grid needs Kitty and a window big enough for two columns and two rows, and the list is
+used otherwise. Playlists saved before this version show a generic name until they next sync.
 
 `visualizer_style` is one of `waterfall`, `bars`, `braille`, `waveform`,
 `fewbars`, `thin`, `galaxy` or `rainbow`. `bar_position` (`bottom` or `top`) sets which edge the `bars`, `fewbars`, `thin`
@@ -142,7 +148,7 @@ Press `?` in MPF for the full in-app reference. Press `,` for settings.
 | `+` / `-` | Change volume |
 | `m` | Mute |
 | `/` or `f` | Fuzzy search |
-| `o` | Load a YouTube URL |
+| `o` | Open a YouTube URL or a saved playlist |
 | `v` | Toggle visualizer |
 | `a` | Cycle visualizer style |
 | `t` | Toggle thumbnail preview |
