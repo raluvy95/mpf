@@ -127,6 +127,22 @@ class TestResponse(unittest.TestCase):
         feed(analyzer, sine(300, seconds=2.0, amplitude=0.9))
         self.assertLess(analyzer.sens, raised)
 
+    def test_the_learned_gain_survives_a_track_change(self):
+        analyzer = PipeWireSpectrumAnalyzer()
+        quiet_track = sine(440, seconds=3.0, amplitude=0.05)
+        feed(analyzer, quiet_track)
+        learned = analyzer.sens
+        analyzer.pause()  # what starting the next track does
+        gains = []
+        pcm = (quiet_track * 32767).astype("<i2")
+        for step in range(0, len(pcm) - HOP + 1, HOP):
+            analyzer._process_samples(pcm[step : step + HOP])
+            gains.append(analyzer.sens)
+        # The start-up ramp ran once, on the first track. Re-arming it per track made the gain shoot up
+        # by about half again before settling; the next track now stays near what was learned.
+        self.assertLess(max(gains), learned * 1.1)
+        self.assertGreater(min(gains), learned * 0.75)
+
     def test_silence_is_empty_and_does_not_grow_the_gain(self):
         analyzer = PipeWireSpectrumAnalyzer()
         frames = feed(analyzer, np.zeros(SR * 2))

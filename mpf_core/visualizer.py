@@ -159,7 +159,10 @@ class PipeWireSpectrumAnalyzer:
         self._bass_bins = int(self._bass_hi.max()) if nb else 0
         self._mid_bins = int(self._mid_hi.max()) if nb < num_bands else 0
         self._reset_state()
-        self.sens = 1.0  # autosens' running gain; kept across pauses like cava keeps it
+        # Autosens' running gain and its fast start-up ramp. Both belong to the whole session: a track change
+        # or pause clears the bars but must not make the gain relearn the loudness from scratch.
+        self.sens = 1.0
+        self._sens_init = True
         self.autosens = True  # cava [general] autosens; only tests switch it off, to compare raw smoothing
 
     def _reset_state(self) -> None:
@@ -170,7 +173,6 @@ class PipeWireSpectrumAnalyzer:
         self._peak = np.zeros(n)
         self._prev = np.zeros(n)
         self._framerate = 75.0  # cavacore's initial estimate; converges to our step rate
-        self._sens_init = True
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
