@@ -1087,6 +1087,18 @@ class TestNewVisualizerStyles(unittest.TestCase):
                 self.assertNotEqual(lines[len(lines) // 2][0], "\u2800")  # reaches the left edge
                 self.assertNotEqual(lines[len(lines) // 2][-1], "\u2800")  # and the right edge
 
+    def test_open_view_setting_cycles_and_persists(self):
+        from mpf_core.config import load_open_view
+
+        player = self._player()
+        player._handle_key(",")
+        self.assertEqual(player._open_view, "list")
+        _choose_setting(player, "open_view")
+        self.assertEqual(player._open_view, "thumbnails")
+        self.assertEqual(load_open_view(player.config_file), "thumbnails")
+        _choose_setting(player, "open_view")
+        self.assertEqual(load_open_view(player.config_file), "list")
+
     def test_bar_position_setting_cycles_and_persists(self):
         from mpf_core.config import load_bar_position
 

@@ -35,10 +35,12 @@ from mpf_core.cache import (
 from mpf_core.config import (
     BAR_POSITIONS,
     COLOR_MODES,
+    OPEN_VIEWS,
     VISUALIZER_STYLES,
     load_bar_position,
     load_color_mode,
     load_default_playlist,
+    load_open_view,
     load_rainbow_colors,
     load_vim_mode,
     load_visualizer_preferences,
@@ -48,6 +50,7 @@ from mpf_core.config import (
     save_bar_position,
     save_color_mode,
     save_default_playlist,
+    save_open_view,
     save_rainbow_colors,
     save_vim_mode,
     save_visualizer_preferences,
@@ -173,6 +176,7 @@ class BlessedMusicPlayer:
         self._show_preview = show_preview
         self._rainbow_colors = load_rainbow_colors(config_file)
         self._bar_position = load_bar_position(config_file)
+        self._open_view = load_open_view(config_file)
         self._color_mode = load_color_mode(config_file)
         # Per-cell intensity (0..1) of the last frame for styles that are not bars; None for bar styles.
         self._cell_levels: Optional[np.ndarray] = None
@@ -1517,6 +1521,9 @@ class BlessedMusicPlayer:
             self._bar_position = BAR_POSITIONS[(index + 1) % len(BAR_POSITIONS)]
             save_bar_position(self._bar_position, self.config_file)
             self._spectrum_history.clear()
+        elif action == "open_view":
+            self._open_view = OPEN_VIEWS[(OPEN_VIEWS.index(self._open_view) + 1) % len(OPEN_VIEWS)]
+            save_open_view(self._open_view, self.config_file)
         elif action == "rainbow":
             self._color_mode = COLOR_MODES[(COLOR_MODES.index(self._color_mode) + 1) % len(COLOR_MODES)]
             save_color_mode(self._color_mode, self.config_file)
@@ -1603,6 +1610,7 @@ class BlessedMusicPlayer:
         ("Display", "Rainbow colouring", "", "rainbow"),
         ("Display", "Rainbow colours", "", "rainbow_colors"),
         ("General", "Vim keys", "V", "vim"),
+        ("Library", "Open dialog view", "", "open_view"),
         ("Library", "Default playlist", "", "playlist"),
         ("Playback", "YouTube fallback clients", "", "clients"),
     )
@@ -1670,6 +1678,7 @@ class BlessedMusicPlayer:
             "visualizer": self._on_off(self._show_visualizer),
             "style": (self._spectrum_style, "cyan"),
             "bar": (self._bar_position, "cyan"),
+            "open_view": (self._open_view, "cyan"),
             "rainbow": self._on_off(self._color_mode == "rainbow"),
             "rainbow_colors": (", ".join(self._rainbow_colors), "cyan"),
             "vim": self._on_off(self._vim_mode),

@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 VISUALIZER_STYLES = ("waterfall", "bars", "braille", "waveform", "fewbars", "thin", "galaxy", "rainbow")
 # Where bar-type styles (bars, fewbars, thin, rainbow) are anchored; independent of the style.
 BAR_POSITIONS = ("bottom", "top")
+# How the open dialog lists saved playlists: one per line, or as a grid of thumbnails (list is the fallback).
+OPEN_VIEWS = ("list", "thumbnails")
 # "rainbow" colours any style's rows by height with rainbow_colors; "plain" keeps the default cyan.
 COLOR_MODES = ("plain", "rainbow")
 # Terminal palette names, so the colours follow the terminal's own theme.
@@ -252,6 +254,23 @@ def save_bar_position(position: str, config_file: str = CONFIG_FILE) -> bool:
     if config is None:
         return False
     config["bar_position"] = position
+    return _save_config(config, config_file)
+
+
+def load_open_view(config_file: str = CONFIG_FILE) -> str:
+    """Return how the open dialog shows saved playlists, using "list" for invalid values."""
+    value = _load_config(config_file).get("open_view")
+    return value if value in OPEN_VIEWS else "list"
+
+
+def save_open_view(view: str, config_file: str = CONFIG_FILE) -> bool:
+    """Persist the open dialog view without replacing other settings."""
+    if view not in OPEN_VIEWS:
+        return False
+    config = _load_config_for_update(config_file)
+    if config is None:
+        return False
+    config["open_view"] = view
     return _save_config(config, config_file)
 
 
