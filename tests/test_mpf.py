@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+from helpers import fake_daemon
 
 from mpf import DEFAULT_PLAYLIST_URL, __version__, configure_logging, parse_cli_args
 from mpf_core import (
@@ -914,28 +915,28 @@ class TestPlayerQualityOfLife(unittest.TestCase):
 
         player = MediaPlayerFluere(auto_play=False, vim_mode=True)
         self.addCleanup(player.previewer.close)
-        player.mpv = MagicMock()
+        sent = fake_daemon(player)
         left = type("Key", (), {"name": "KEY_LEFT"})()
 
         player._handle_key(left)
-        player.mpv.command.assert_not_called()
+        self.assertEqual(sent, [])
 
         player._handle_key("h")
-        player.mpv.command.assert_called_once_with("seek", -5, "relative")
+        self.assertEqual(sent, [("seek_rel", {"seconds": -5})])
 
     def test_standard_mode_uses_arrow_keys_instead_of_hjkl(self):
         from mpf_core.player import MediaPlayerFluere
 
         player = MediaPlayerFluere(auto_play=False, vim_mode=False)
         self.addCleanup(player.previewer.close)
-        player.mpv = MagicMock()
+        sent = fake_daemon(player)
         left = type("Key", (), {"name": "KEY_LEFT"})()
 
         player._handle_key("h")
-        player.mpv.command.assert_not_called()
+        self.assertEqual(sent, [])
 
         player._handle_key(left)
-        player.mpv.command.assert_called_once_with("seek", -5, "relative")
+        self.assertEqual(sent, [("seek_rel", {"seconds": -5})])
 
 
 def _key(name):
@@ -1042,39 +1043,41 @@ class TestSettingsScreen(unittest.TestCase):
         self.assertEqual(load_visualizer_preferences(config), ("bars", False))
         self.assertTrue(player._show_settings)
 
-    def test_edit_default_playlist_validates_and_saves(self):
-        from mpf_core.config import load_default_playlist
-
-        player, config = self._player()
+    def test_edit_default_playlist_validates_and_asks_the_player_to_save(self):
+        player, _config = self._player()
+        sent = fake_daemon(player)  # the background player writes this setting, so the client sends it
         player._handle_key(",")
         _choose_setting(player, "playlist")
         player._input_buffer = ""
         self._type(player, "not a url")
-        self.assertEqual(load_default_playlist(config), "")
+        self.assertEqual(sent, [])
         self.assertTrue(player._settings_msg)
         _choose_setting(player, "playlist")
         player._input_buffer = ""
         self._type(player, "https://www.youtube.com/playlist?list=PLabc")
-        self.assertEqual(load_default_playlist(config), "https://www.youtube.com/playlist?list=PLabc")
+        self.assertEqual(
+            sent, [("set_playback_config", {"default_playlist": "https://www.youtube.com/playlist?list=PLabc"})]
+        )
+        self.assertEqual(player._settings_msg, "Default playlist saved.")
 
-    def test_edit_fallback_clients_saves_and_applies_immediately(self):
-        from mpf_core.config import load_ytdl_fallback_clients
-
-        player, config = self._player()
+    def test_edit_fallback_clients_is_sent_and_shown_immediately(self):
+        player, _config = self._player()
+        sent = fake_daemon(player)
         player._handle_key(",")
         _choose_setting(player, "clients")
         player._input_buffer = ""
         self._type(player, "web_safari, android")
-        self.assertEqual(load_ytdl_fallback_clients(config), ("web_safari", "android"))
+        self.assertEqual(sent, [("set_playback_config", {"fallback_clients": ["web_safari", "android"]})])
         self.assertEqual(player._ytdl_fallback_clients, ("web_safari", "android"))
         _choose_setting(player, "clients")
         player._input_buffer = ""
         self._type(player, "bad=name")
+        self.assertEqual(len(sent), 1)  # refused before sending
         self.assertEqual(player._ytdl_fallback_clients, ("web_safari", "android"))
         _choose_setting(player, "clients")
         player._input_buffer = ""
         self._type(player, "")
-        self.assertEqual(load_ytdl_fallback_clients(config), ())
+        self.assertEqual(sent[-1], ("set_playback_config", {"fallback_clients": []}))
 
 
 class TestNewVisualizerStyles(unittest.TestCase):
@@ -1433,12 +1436,9 @@ class TestOpenPromptErrors(unittest.TestCase):
         self.assertEqual(player._input_error, "")
         player._input_buffer = "https://www.youtube.com/playlist?list=PLabc"
 
-        async def go():
-            with patch.object(player, "load_playlist", new=MagicMock(return_value=asyncio.sleep(0))):
-                player._handle_key("\n")
-                await asyncio.sleep(0)
-
-        asyncio.run(go())
+        sent = fake_daemon(player)
+        player._handle_key("\n")
+        self.assertEqual(sent, [("load_url", {"url": "https://www.youtube.com/playlist?list=PLabc", "force": False})])
         self.assertEqual((player._input_mode, player._input_buffer, player._input_error), ("none", "", ""))
 
 
@@ -1466,8 +1466,8 @@ class TestOpenDialog(unittest.TestCase):
         patcher = patch("mpf_core.player.list_saved_playlists", return_value=saved)
         patcher.start()
         self.addCleanup(patcher.stop)
-        player.load_playlist = lambda url: self._opened.append(url) or asyncio.sleep(0)  # type: ignore[method-assign]
         self._opened: list[str] = []
+        player.load_url = lambda url, *args, **kwargs: self._opened.append(url)  # type: ignore[method-assign]
         return player
 
     @staticmethod
@@ -1929,3 +1929,14 @@ class TestShortTerminalScreens(unittest.TestCase):
             self.assertTrue(any("›" in line for line in shown), shown)  # the cursor row is on screen
             self.assertIn("Esc close", shown[-1])
             player._handle_key(self._key("KEY_DOWN"))
+
+
+class TestScriptEntryPoint(unittest.TestCase):
+    def test_running_the_script_really_runs_main(self):
+        # main() is called directly everywhere else, so a missing __main__ guard went unnoticed once.
+        import subprocess
+        import sys
+
+        script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mpf.py")
+        result = subprocess.run([sys.executable, script, "--version"], capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout.strip(), f"mpf.py {__version__}")

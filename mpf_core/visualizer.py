@@ -145,6 +145,7 @@ class PipeWireSpectrumAnalyzer:
         self._process: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
         self._process_lock = threading.Lock()
+        self._wake = threading.Event()  # ends the idle wait at once on stop() or resume()
 
         self._fft = fft
         self._bass_fft = bass_fft
@@ -185,6 +186,7 @@ class PipeWireSpectrumAnalyzer:
 
     def stop(self) -> None:
         self._running = False
+        self._wake.set()
         self.pause()
         if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=1.0)
@@ -218,6 +220,7 @@ class PipeWireSpectrumAnalyzer:
     def resume(self) -> None:
         """Resume audio capture."""
         self.enabled = True
+        self._wake.set()
 
     # ── Capture ──────────────────────────────────────────────────────────────
 
@@ -256,7 +259,8 @@ class PipeWireSpectrumAnalyzer:
     def _capture_loop(self) -> None:
         while self._running:
             if not self.enabled:
-                time.sleep(0.1)
+                self._wake.wait(0.1)
+                self._wake.clear()
                 continue
 
             cmd = self._get_capture_command()

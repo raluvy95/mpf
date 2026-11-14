@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 from blessed import Terminal
 from blessed.keyboard import Keystroke
+from helpers import fake_daemon
 
 from mpf_core.cache import (
     PlaybackState,
@@ -25,6 +26,7 @@ from mpf_core.cache import (
     save_cached_playlist,
     save_playback_state,
 )
+from mpf_core.engine import PlaybackEngine
 from mpf_core.fetcher import InvalidMediaURL, Playlist, PlaylistFetchError, validate_media_url
 from mpf_core.models import RepeatMode, Track, TrackQueue
 from mpf_core.player import MediaPlayerFluere
@@ -98,8 +100,7 @@ class TestPlaylistRefresh(unittest.IsolatedAsyncioTestCase):
         old = [Track("a", "A"), Track("b", "B"), Track("c", "C")]
         fresh = [Track("c", "C2"), Track("a", "A2"), Track("b", "B2")]
         saved = PlaybackState(PLAYLIST_URL, "b", 1, 42.0)
-        player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
-        self.addCleanup(player.previewer.close)
+        player = PlaybackEngine(PLAYLIST_URL, auto_play=False)
         with (
             patch("mpf_core.engine.load_cached_playlist", return_value=old),
             patch("mpf_core.engine.load_playback_state", return_value=saved),
@@ -111,14 +112,12 @@ class TestPlaylistRefresh(unittest.IsolatedAsyncioTestCase):
             await player.load_playlist(PLAYLIST_URL)
         self.assertEqual(player.queue.current_track.id, "b")
         self.assertEqual(player.queue.current_idx, 2)
-        self.assertEqual(player._selected_list_idx, 2)
 
     async def test_force_refetches_a_fresh_cache_and_replaces_it(self):
         old = [Track("a", "A"), Track("b", "B")]
         fresh = [Track("a", "A"), Track("b", "B"), Track("c", "C")]
         for force, fetched in ((False, 0), (True, 1)):
-            player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
-            self.addCleanup(player.previewer.close)
+            player = PlaybackEngine(PLAYLIST_URL, auto_play=False)
             with (
                 patch("mpf_core.engine.load_cached_playlist", return_value=old),
                 patch("mpf_core.engine.load_playback_state", return_value=None),
@@ -133,8 +132,7 @@ class TestPlaylistRefresh(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_outage_keeps_cached_queue(self):
         old = [Track("a", "A"), Track("b", "B")]
-        player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
-        self.addCleanup(player.previewer.close)
+        player = PlaybackEngine(PLAYLIST_URL, auto_play=False)
         with (
             patch("mpf_core.engine.load_cached_playlist", return_value=old),
             patch("mpf_core.engine.load_playback_state", return_value=None),
@@ -147,8 +145,7 @@ class TestPlaylistRefresh(unittest.IsolatedAsyncioTestCase):
         self.assertIn("using cached playlist", player._status_msg)
 
     async def test_failed_initial_load_does_not_replace_default_playlist(self):
-        player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
-        self.addCleanup(player.previewer.close)
+        player = PlaybackEngine(PLAYLIST_URL, auto_play=False)
         with (
             patch("mpf_core.engine.load_cached_playlist", return_value=None),
             patch("mpf_core.engine.is_playlist_cache_stale", return_value=True),
@@ -161,15 +158,11 @@ class TestPlaylistRefresh(unittest.IsolatedAsyncioTestCase):
 
 class TestPlayerFailureHandling(unittest.TestCase):
     def setUp(self):
-        self.player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
+        self.player = PlaybackEngine(PLAYLIST_URL, auto_play=False)
         self.player.queue = TrackQueue([Track("a", "A"), Track("b", "B"), Track("c", "C")])
         self.player.mpv = MagicMock()
-        self.player.previewer.request = MagicMock()
         self.player._ytdl_plain_retries = 0  # retries have their own tests below
         self.player._ytdl_fallback_clients = ()
-
-    def tearDown(self):
-        self.player.previewer.close()
 
     def test_unavailable_tracks_advance_then_stop(self):
         self.player._handle_mpv_end_file({"reason": "error", "error": "unavailable"})
@@ -232,22 +225,15 @@ class TestPlayerFailureHandling(unittest.TestCase):
         self.assertEqual(self.player._status_msg, "Playlist finished.")
 
     def test_next_previous_and_volume_controls_drive_player_state(self):
-        self.player._handle_key("n")
+        self.player.next_track()
         self.assertEqual(self.player.queue.current_track.id, "b")
-        self.player._handle_key("p")
+        self.player.previous_track()
         self.assertEqual(self.player.queue.current_track.id, "a")
-        self.player._handle_key("+")
+        self.player.set_volume(105)
         self.assertEqual(self.player._volume, 100)
         self.assertEqual(self.player.mpv.volume, 100)
-        self.player._volume = 0
-        self.player._handle_key("-")
+        self.player.set_volume(-5)
         self.assertEqual(self.player._volume, 0)
-
-    def test_unnamed_key_does_not_interrupt_track_skipping(self):
-        self.player._handle_key(Keystroke("x"))
-        self.player._handle_key(Keystroke("n"))
-
-        self.assertEqual(self.player.queue.current_track.id, "b")
 
     def test_playback_state_volume_is_clamped_to_supported_range(self):
         self.assertEqual(PlaybackState.from_dict({"volume": 150}).volume, 100)
@@ -278,39 +264,13 @@ class TestPlayerFailureHandling(unittest.TestCase):
         self.assertTrue(self.player._is_buffering)
         self.assertIn("playing from start", self.player._status_msg)
 
-    def test_fuzzy_search_cursor_selects_non_first_match(self):
-        self.player.queue = TrackQueue([Track("a", "Song A"), Track("b", "Song B")])
-        self.player._input_mode = "search"
-        self.player._input_buffer = "song"
-        self.player.queue.set_filter("song")
-        self.player._list_height = 3
-        down = type("Key", (), {"name": "KEY_DOWN", "is_sequence": True})()
-
-        self.player._handle_key(down)
-        self.player._handle_key("\n")
-
-        self.assertEqual(self.player._selected_list_idx, 1)
-        self.assertEqual(self.player.queue.current_track.id, "b")
-
-    def test_navigation_requests_immediate_render(self):
-        self.player._vim_mode = True
-        self.player._render_requested.clear()
-
-        self.player._handle_key("j")
-
-        self.assertTrue(self.player._render_requested.is_set())
-
 
 class TestPowerInhibition(unittest.TestCase):
     def setUp(self):
-        self.player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
+        self.player = PlaybackEngine(PLAYLIST_URL, auto_play=False)
         self.player.queue = TrackQueue([Track("a", "A")])
         self.player.mpv = MagicMock()
         self.player.mpv.pause = False
-        self.player.previewer.request = MagicMock()
-
-    def tearDown(self):
-        self.player.previewer.close()
 
     @patch("subprocess.Popen")
     def test_playback_blocks_system_sleep(self, popen):
@@ -339,7 +299,7 @@ class TestPowerInhibition(unittest.TestCase):
         process.stdin = io.BytesIO()
         self.player._play_index(0)
 
-        self.player._handle_key(" ")
+        self.player.set_paused(True)
 
         self.assertTrue(process.stdin.closed)
         process.wait.assert_called_once_with(timeout=0.5)
@@ -357,22 +317,17 @@ class TestPowerInhibition(unittest.TestCase):
 class TestMockedPlayerLifecycle(unittest.IsolatedAsyncioTestCase):
     async def test_run_shuts_down_mpv_and_optional_processes(self):
         with patch("mpf_core.engine.MPV") as mock_mpv:
-            player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
-            player.previewer.close()
-            player.term = MagicMock()
-            player.term.inkey.return_value = "q"
-            player.spectrum = MagicMock()
-            player.previewer = MagicMock()
+            player = PlaybackEngine(PLAYLIST_URL, auto_play=False)
+            player.mpris = MagicMock()
+            player.mpris.start = AsyncMock()
             player.load_playlist = AsyncMock()
-            player._render = MagicMock()
+            asyncio.get_running_loop().call_later(0.05, player._request_quit)
 
-            await player.run()
+            await player.run_headless()
 
         mock_mpv.return_value.terminate.assert_called_once()
-        player.spectrum.start.assert_called_once()
-        player.spectrum.stop.assert_called_once()
-        player.previewer.clear.assert_called_once()
-        player.previewer.close.assert_called_once()
+        player.mpris.stop.assert_called_once()
+        self.assertIsNone(player.mpv)
 
 
 class TestThumbnailPolicy(unittest.TestCase):
@@ -435,8 +390,7 @@ class TestRenderOptimization(unittest.TestCase):
 class TestPlaybackStatePersistence(unittest.IsolatedAsyncioTestCase):
     def _player(self):
         with patch("mpf_core.engine.MPV"):
-            player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
-        self.addCleanup(player.previewer.close)
+            player = PlaybackEngine(PLAYLIST_URL, auto_play=False)
         player.queue = TrackQueue([Track("a", "Song A"), Track("b", "Song B")])
         return player
 
@@ -500,8 +454,7 @@ class TestPlaybackStatePersistence(unittest.IsolatedAsyncioTestCase):
 class TestIdleAndBufferingState(unittest.IsolatedAsyncioTestCase):
     async def _poll_once(self, **mpv_props):
         with patch("mpf_core.engine.MPV"):
-            player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
-        self.addCleanup(player.previewer.close)
+            player = PlaybackEngine(PLAYLIST_URL, auto_play=False)
         player.queue = TrackQueue([Track("a", "Song A")])
         player.mpv = MagicMock(time_pos=0.0, duration=0.0, paused_for_cache=False, **mpv_props)
         task = asyncio.create_task(player._mpv_poll_loop())
@@ -523,31 +476,11 @@ class TestIdleAndBufferingState(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(player._mpv_idle)
         self.assertTrue(player._is_buffering)
 
-    async def test_visualizer_stays_paused_while_nothing_is_loaded(self):
-        with patch("mpf_core.engine.MPV"):
-            player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
-        self.addCleanup(player.previewer.close)
-        player.queue = TrackQueue([Track("a", "Song A")])
-        player._show_visualizer = True
-        player.spectrum = MagicMock(enabled=False)
-        player.mpv = MagicMock(
-            time_pos=0.0, duration=0.0, paused_for_cache=False, core_idle=True, idle_active=True
-        )
-        task = asyncio.create_task(player._mpv_poll_loop())
-        await asyncio.sleep(0.05)
-        player._running = False
-        with patch("mpf_core.engine.save_playback_state"):
-            await task
-
-        player.spectrum.resume.assert_not_called()
-
     def test_playing_a_track_clears_idle_state(self):
         with patch("mpf_core.engine.MPV"):
-            player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
-        self.addCleanup(player.previewer.close)
+            player = PlaybackEngine(PLAYLIST_URL, auto_play=False)
         player.queue = TrackQueue([Track("a", "Song A")])
         player.mpv = MagicMock()
-        player.previewer.request = MagicMock()
         self.assertTrue(player._mpv_idle)
 
         player._play_index(0)
@@ -564,39 +497,44 @@ def _mouse(name, x, y):
     )()
 
 
-class TestVisualizerOnPause(unittest.IsolatedAsyncioTestCase):
-    async def _mode_after_poll(self, paused, **mpv_props):
-        with patch("mpf_core.engine.MPV"):
-            player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
+class TestVisualizerOnPause(unittest.TestCase):
+    def _client(self, show_visualizer, spectrum_enabled):
+        player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(player.previewer.close)
+        player.previewer.request = MagicMock()
         player.queue = TrackQueue([Track("a", "Song A")])
-        player._show_visualizer = True
-        player._is_paused = paused
-        player.spectrum = MagicMock(enabled=True)
-        player.mpv = MagicMock(time_pos=5.0, duration=100.0, paused_for_cache=False, **mpv_props)
-        task = asyncio.create_task(player._mpv_poll_loop())
-        await asyncio.sleep(0.05)
-        player._running = False
-        with patch("mpf_core.engine.save_playback_state"):
-            await task
+        player._show_visualizer = show_visualizer
+        player.spectrum = MagicMock(enabled=spectrum_enabled)
+        return player
+
+    def _mode_after_state(self, **state):
+        player = self._client(True, True)
+        player._apply_state(state)
         return player.spectrum
 
-    async def test_pausing_freezes_the_visualizer_instead_of_clearing_it(self):
-        spectrum = await self._mode_after_poll(True, core_idle=True, idle_active=False)
+    def test_pausing_freezes_the_visualizer_instead_of_clearing_it(self):
+        spectrum = self._mode_after_state(paused=True, idle=False, buffering=False)
 
         spectrum.freeze.assert_called_once()
         spectrum.pause.assert_not_called()
 
-    async def test_nothing_loaded_clears_the_visualizer(self):
-        spectrum = await self._mode_after_poll(False, core_idle=True, idle_active=True)
+    def test_nothing_loaded_clears_the_visualizer(self):
+        spectrum = self._mode_after_state(paused=False, idle=True, buffering=False)
 
         spectrum.pause.assert_called_once()
         spectrum.freeze.assert_not_called()
 
-    async def test_playing_runs_the_visualizer(self):
-        spectrum = await self._mode_after_poll(False, core_idle=False, idle_active=False)
+    def test_playing_runs_the_visualizer(self):
+        spectrum = self._mode_after_state(paused=False, idle=False, buffering=False)
 
         spectrum.resume.assert_called_once()
+
+    def test_a_visualizer_that_is_switched_off_stays_untouched(self):
+        player = self._client(False, False)
+        player._apply_state({"paused": False, "idle": False, "buffering": False})
+        player.spectrum.resume.assert_not_called()
+        player.spectrum.freeze.assert_not_called()
+        player.spectrum.pause.assert_not_called()
 
     def test_frozen_waterfall_holds_its_rows_and_cleared_one_goes_blank(self):
         with patch("mpf_core.engine.MPV"):
@@ -628,24 +566,21 @@ class TestMouseControls(unittest.TestCase):
             self.player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(self.player.previewer.close)
         self.player.queue = TrackQueue([Track("a", "A"), Track("b", "B"), Track("c", "C")])
-        self.player.mpv = MagicMock()
+        self.sent = fake_daemon(self.player)
         self.player._duration = 100.0
         self.player._timeline_hit = (2, 7, 85)  # row, first column, width
 
     def test_click_on_the_progress_bar_jumps_to_that_point(self):
         self.player._handle_mouse(_mouse("MOUSE_LEFT", 7 + 42, 2))  # 42 of 84 cells: halfway
 
-        self.player.mpv.command.assert_called_once_with("seek", 50.0, "absolute")
+        self.assertEqual(self.sent, [("seek_abs", {"seconds": 50.0})])
         self.assertEqual(self.player._time_pos, 50.0)
 
     def test_click_at_either_end_of_the_bar_seeks_to_start_and_end(self):
         self.player._handle_mouse(_mouse("MOUSE_LEFT", 7, 2))
         self.player._handle_mouse(_mouse("MOUSE_LEFT", 7 + 84, 2))
 
-        self.assertEqual(
-            [call.args for call in self.player.mpv.command.call_args_list],
-            [("seek", 0.0, "absolute"), ("seek", 100.0, "absolute")],
-        )
+        self.assertEqual(self.sent, [("seek_abs", {"seconds": 0.0}), ("seek_abs", {"seconds": 100.0})])
 
     def test_dragging_scrubs_until_release_and_clamps_outside_the_bar(self):
         self.player._handle_mouse(_mouse("MOUSE_LEFT", 7 + 21, 2))
@@ -654,9 +589,7 @@ class TestMouseControls(unittest.TestCase):
         self.player._handle_mouse(_mouse("MOUSE_LEFT_RELEASED", 200, 2))
         self.player._handle_mouse(_mouse("MOUSE_LEFT_MOTION", 7 + 10, 2))  # after release: ignored
 
-        self.assertEqual(
-            [call.args[1] for call in self.player.mpv.command.call_args_list], [25.0, 75.0, 100.0]
-        )
+        self.assertEqual([args["seconds"] for _name, args in self.sent], [25.0, 75.0, 100.0])
 
     def test_clicks_that_miss_the_bar_or_have_no_duration_do_not_seek(self):
         self.player._handle_mouse(_mouse("MOUSE_LEFT", 3, 2))  # on the elapsed-time label
@@ -665,7 +598,7 @@ class TestMouseControls(unittest.TestCase):
         self.player._duration = 0.0
         self.player._handle_mouse(_mouse("MOUSE_LEFT", 20, 2))
 
-        self.player.mpv.command.assert_not_called()
+        self.assertEqual(self.sent, [])
 
     def test_clicking_summary_icons_cycles_repeat_and_shuffles(self):
         self.player._summary_hits = [(80, 82, "repeat"), (85, 87, "shuffle")]
@@ -674,11 +607,11 @@ class TestMouseControls(unittest.TestCase):
         self.player._handle_mouse(_mouse("MOUSE_LEFT", 81, 0))
         self.assertEqual(self.player.queue.repeat_mode, before.next_mode())
 
-        with patch.object(self.player.queue, "set_shuffle") as shuffle:
-            self.player._handle_mouse(_mouse("MOUSE_LEFT", 83, 0))  # between icons
-            shuffle.assert_not_called()
-            self.player._handle_mouse(_mouse("MOUSE_LEFT", 86, 0))
-            shuffle.assert_called_once()
+        self.assertEqual(self.sent, [("cycle_repeat", {})])
+        self.player._handle_mouse(_mouse("MOUSE_LEFT", 83, 0))  # between icons
+        self.assertEqual(len(self.sent), 1)
+        self.player._handle_mouse(_mouse("MOUSE_LEFT", 86, 0))
+        self.assertEqual(self.sent[1:], [("set_shuffle", {"enabled": True})])
 
     def test_render_publishes_click_targets(self):
         player = self.player
@@ -723,7 +656,7 @@ class TestRenderProtection(unittest.TestCase):
             self.assertFalse(self.player._render_requested.is_set())
 
     def test_real_changes_still_request_a_redraw(self):
-        for event, expected in (("j", 1), (_mouse("MOUSE_SCROLL_DOWN", 5, 5), 2), ("k", 1), ("s", None)):
+        for event, expected in (("j", 1), (_mouse("MOUSE_SCROLL_DOWN", 5, 5), 2), ("k", 1)):
             self.player._render_requested.clear()
             self.player._handle_key(event)
             self.assertTrue(self.player._render_requested.is_set(), event)
@@ -1022,7 +955,7 @@ class TestSearchIsolation(unittest.TestCase):
         tracks = [Track(str(i), f"Song {i:02d}") for i in range(30)]
         tracks[20] = Track("20", "Needle Track")
         self.player.queue = TrackQueue(tracks)
-        self.player.mpv = MagicMock()
+        self.sent = fake_daemon(self.player)
         self.player.previewer.request = MagicMock()
         self.player._list_height = 5
         self.player._selected_list_idx = 12
@@ -1083,7 +1016,7 @@ class TestSearchIsolation(unittest.TestCase):
 
         self._assert_back_on_full_list_where_left_off()
         self.assertEqual(self.player.queue.current_idx, playing_before)
-        self.player.mpv.play.assert_not_called()
+        self.assertEqual(self.sent, [])
 
     def test_restored_selection_is_clamped_if_the_playlist_shrank_meanwhile(self):
         self.player._selected_list_idx = 25

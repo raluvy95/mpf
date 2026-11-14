@@ -14,7 +14,7 @@ import stat
 import subprocess
 import sys
 import time
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional, Sequence
 
 from mpf_core.paths import CACHE_DIR
 
@@ -101,14 +101,16 @@ def stop(timeout: float = 10.0) -> bool:
     return True
 
 
-def spawn(playlist_url: str, config_file: str, adopt_ipc: Optional[str] = None) -> bool:
+def spawn(
+    playlist_url: str, config_file: str, adopt_ipc: Optional[str] = None, extra_args: Sequence[str] = ()
+) -> bool:
     """Start a detached headless player that resumes where the TUI stopped.
 
     With ``adopt_ipc`` it takes over the mpv already playing on that IPC socket instead of starting its own,
     so the music carries on without a gap.
     """
     command = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, os.path.abspath(sys.argv[0])]
-    command += ["--daemon", "--config", config_file]
+    command += ["--daemon", "--config", config_file, *extra_args]
     if adopt_ipc:
         command += ["--adopt-ipc", adopt_ipc]
     if playlist_url:

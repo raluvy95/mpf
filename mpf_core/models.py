@@ -170,6 +170,15 @@ class TrackQueue:
                 min(old_index, len(self.tracks) - 1),
             )
 
+    def replace_tracks(self, tracks: List[Track]) -> None:
+        """Show exactly these tracks in this order; the index, shuffle and repeat are set by the caller.
+
+        For a client mirroring a queue that lives elsewhere: it must not reshuffle or re-find the current track.
+        """
+        self.tracks = list(tracks)
+        self._filtered_cache = None
+        self.revision += 1
+
     @property
     def current_track(self) -> Optional[Track]:
         if 0 <= self.current_idx < len(self.tracks):

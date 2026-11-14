@@ -10,7 +10,7 @@ HEAVY = ("numpy", "blessed")
 class TestEngineWeight(unittest.TestCase):
     def test_engine_imports_neither_numpy_nor_blessed(self):
         # A fresh interpreter: this test process has long since imported both through other tests.
-        code = "import sys, mpf_core.engine, mpf_core.server; print(','.join(m for m in %r if m in sys.modules))" % (HEAVY,)
+        code = "import sys, mpf_core.engine, mpf_core.server, mpf_core.client, mpf_core.protocol; print(','.join(m for m in %r if m in sys.modules))" % (HEAVY,)
         result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.strip(), "", f"the engine pulled in: {result.stdout.strip()}")
 

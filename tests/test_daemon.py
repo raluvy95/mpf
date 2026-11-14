@@ -15,8 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import mpf
 from mpf_core import daemon
-from mpf_core.models import Track
-from mpf_core.player import MediaPlayerFluere
+from mpf_core.engine import PlaybackEngine
 
 PLAYLIST_URL = "https://www.youtube.com/playlist?list=PLabc"
 
@@ -31,46 +30,6 @@ class RuntimeDirTestCase(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-
-
-class TestDetachRule(unittest.TestCase):
-    """q and Ctrl-C both end in run()'s cleanup, which asks _should_detach()."""
-
-    def _player(self):
-        player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
-        self.addCleanup(player.previewer.close)
-        player.queue.set_tracks([Track(id="a", title="A", uploader="X")])
-        player.queue.current_idx = 0
-        player.mpv = MagicMock()
-        player._is_paused = False
-        return player
-
-    def test_playing_track_keeps_playing_in_background(self):
-        self.assertTrue(self._player()._should_detach())
-
-    def test_paused_player_exits_completely(self):
-        player = self._player()
-        player._is_paused = True
-        self.assertFalse(player._should_detach())
-
-    def test_nothing_loaded_exits_completely(self):
-        player = self._player()
-        player.queue.set_tracks([])
-        self.assertFalse(player._should_detach())
-
-    def test_no_mpv_exits_completely(self):
-        player = self._player()
-        player.mpv = None
-        self.assertFalse(player._should_detach())
-
-    def test_a_headless_player_never_detaches_again(self):
-        player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False, headless=True)
-        self.addCleanup(player.previewer.close)
-        player.queue.set_tracks([Track(id="a", title="A", uploader="X")])
-        player.queue.current_idx = 0
-        player.mpv = MagicMock()
-        player._is_paused = False
-        self.assertFalse(player._should_detach())
 
 
 class TestControlSocket(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
@@ -182,18 +141,14 @@ class TestSpawn(unittest.TestCase):
 
 
 class TestHeadlessRun(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
-    async def test_quit_command_stops_a_headless_player_without_touching_the_terminal(self):
+    async def test_quit_command_stops_a_headless_engine_and_removes_the_socket(self):
         with patch("mpf_core.engine.MPV") as mock_mpv:
-            player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False, headless=True)
-            player.previewer.close()
-            player.term = MagicMock()
-            player.spectrum = MagicMock()
-            player.previewer = MagicMock()
-            player.mpris = MagicMock()
-            player.mpris.start = AsyncMock()
-            player.load_playlist = AsyncMock()
+            engine = PlaybackEngine(PLAYLIST_URL, auto_play=False, headless=True)
+            engine.mpris = MagicMock()
+            engine.mpris.start = AsyncMock()
+            engine.load_playlist = AsyncMock()
 
-            task = asyncio.create_task(player.run())
+            task = asyncio.create_task(engine.run_headless())
             for _ in range(100):
                 if await asyncio.to_thread(daemon.is_running):
                     break
@@ -202,30 +157,7 @@ class TestHeadlessRun(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(task, 5)
 
         mock_mpv.return_value.terminate.assert_called_once()
-        player.term.fullscreen.assert_not_called()
-        player.spectrum.start.assert_not_called()
-        player.previewer.clear.assert_not_called()
         self.assertFalse(os.path.exists(daemon.socket_path()))
-        self.assertFalse(player.detach_on_exit)
-
-    async def test_interactive_run_requests_a_handoff_only_when_it_should(self):
-        for paused, expected in ((False, True), (True, False)):
-            with self.subTest(paused=paused), patch("mpf_core.engine.MPV"):
-                player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
-                player.previewer.close()
-                player.term = MagicMock()
-                player.term.inkey.return_value = "q"
-                player.spectrum = MagicMock()
-                player.previewer = MagicMock()
-                player.load_playlist = AsyncMock()
-                player._render = MagicMock()
-                player.queue.set_tracks([Track(id="a", title="A", uploader="X")])
-                player.queue.current_idx = 0
-                player._is_paused = paused
-
-                await player.run()
-
-                self.assertEqual(player.detach_on_exit, expected)
 
 
 class TestCli(unittest.TestCase):
@@ -257,93 +189,65 @@ class TestCli(unittest.TestCase):
         output = self._main(["quit"], **{"mpf_core.daemon.stop": MagicMock(return_value=False)})
         self.assertIn("not running", output.lower())
 
-    def test_starting_the_tui_takes_over_from_a_running_daemon(self):
-        order = []
-        player = MagicMock()
-        player.run = AsyncMock(side_effect=lambda: order.append("run"))
-        player.detach_on_exit = False
-        fake_class = MagicMock(return_value=player)
-        stop = MagicMock(side_effect=lambda: order.append("stop") or True)
-        with patch("mpf_core.MediaPlayerFluere", fake_class, create=True):
-            self._main([PLAYLIST_URL], **{"mpf_core.daemon.stop": stop})
-        self.assertEqual(order, ["stop", "run"])
-
-    def test_leaving_while_playing_prints_the_note_once_the_daemon_took_over(self):
+    def _client(self, **attrs):
         player = MagicMock()
         player.run = AsyncMock()
-        player.detach_on_exit = True
-        player.handed_off = True
+        player.music_continues = False
+        for key, value in attrs.items():
+            setattr(player, key, value)
+        return player
+
+    def test_starting_the_tui_attaches_and_never_stops_the_daemon(self):
+        player = self._client()
+        fake_class = MagicMock(return_value=player)
+        stop = MagicMock()
+        with patch("mpf_core.MediaPlayerFluere", fake_class, create=True):
+            self._main([PLAYLIST_URL], **{"mpf_core.daemon.stop": stop})
+        player.run.assert_awaited_once()
+        stop.assert_not_called()
+        kwargs = fake_class.call_args.kwargs
+        self.assertEqual((kwargs["playlist_url"], kwargs["auto_play"], kwargs["force_refresh"]), (PLAYLIST_URL, True, False))
+
+    def test_no_url_means_whatever_the_background_player_is_playing(self):
+        fake_class = MagicMock(return_value=self._client())
+        with patch("mpf_core.MediaPlayerFluere", fake_class, create=True):
+            self._main([])
+        self.assertEqual(fake_class.call_args.kwargs["playlist_url"], "")
+
+    def test_flags_reach_the_client(self):
+        fake_class = MagicMock(return_value=self._client())
+        with patch("mpf_core.MediaPlayerFluere", fake_class, create=True):
+            self._main(["--no-auto-play", "--force-cache", "--no-visualizer", "--no-preview", PLAYLIST_URL])
+        kwargs = fake_class.call_args.kwargs
+        self.assertFalse(kwargs["auto_play"])
+        self.assertTrue(kwargs["force_refresh"])
+        self.assertFalse(kwargs["show_visualizer"])
+        self.assertFalse(kwargs["show_preview"])
+
+    def test_leaving_while_music_plays_says_how_to_stop_it(self):
+        player = self._client(music_continues=True)
         with (
             patch("mpf_core.MediaPlayerFluere", MagicMock(return_value=player), create=True),
             patch.object(sys, "argv", ["./mpf.py"]),
         ):
-            output = self._main([PLAYLIST_URL], **{"mpf_core.daemon.stop": MagicMock(return_value=False)})
-        self.assertIn("still running", output)
+            output = self._main([PLAYLIST_URL])
+        self.assertIn("still playing", output)
         self.assertIn("./mpf.py quit", output)
 
-    def _return_to_tui(self, argv, handover, default=PLAYLIST_URL):
-        player = MagicMock()
-        player.run = AsyncMock()
-        player.detach_on_exit = False
-        fake_class = MagicMock(return_value=player)
-        stop = MagicMock(return_value=True)
-        with patch("mpf_core.MediaPlayerFluere", fake_class, create=True):
-            self._main(
-                argv,
-                **{
-                    "mpf_core.daemon.handover": handover,
-                    "mpf_core.daemon.stop": stop,
-                    "mpf.load_default_playlist": MagicMock(return_value=default),
-                },
-            )
-        return fake_class.call_args.kwargs, stop
+    def test_leaving_while_paused_prints_no_note(self):
+        with patch("mpf_core.MediaPlayerFluere", MagicMock(return_value=self._client()), create=True):
+            output = self._main([PLAYLIST_URL])
+        self.assertNotIn("still playing", output)
 
-    def test_returning_adopts_the_daemons_mpv_instead_of_killing_it(self):
-        for argv in ([], [PLAYLIST_URL]):
-            with self.subTest(argv=argv):
-                handover = MagicMock(return_value="/run/user/1/mpv.sock")
-                kwargs, stop = self._return_to_tui(argv, handover)
-                self.assertEqual(kwargs["adopt_ipc"], "/run/user/1/mpv.sock")
-                self.assertTrue(kwargs["auto_play"])
-                stop.assert_not_called()
+    def test_an_unavailable_background_player_is_reported_and_exits_nonzero(self):
+        from mpf_core.client import DaemonUnavailable
 
-    def test_returning_with_another_playlist_stops_the_daemon(self):
-        handover = MagicMock(return_value="/run/user/1/mpv.sock")
-        kwargs, stop = self._return_to_tui(["https://www.youtube.com/watch?v=other"], handover)
-        handover.assert_not_called()
-        stop.assert_called_once()
-        self.assertIsNone(kwargs["adopt_ipc"])
-
-    def test_returning_with_no_auto_play_stops_the_daemon(self):
-        handover = MagicMock(return_value="/run/user/1/mpv.sock")
-        kwargs, stop = self._return_to_tui(["--no-auto-play"], handover)
-        handover.assert_not_called()
-        stop.assert_called_once()
-        self.assertIsNone(kwargs["adopt_ipc"])
-
-    def test_a_daemon_that_cannot_hand_over_is_stopped(self):
-        kwargs, stop = self._return_to_tui([], MagicMock(return_value=None))
-        stop.assert_called_once()
-        self.assertIsNone(kwargs["adopt_ipc"])
-
-    def test_leaving_while_paused_prints_no_note_and_starts_nothing(self):
-        player = MagicMock()
-        player.run = AsyncMock()
-        player.detach_on_exit = False
-        player.handed_off = False
+        player = self._client()
+        player.run = AsyncMock(side_effect=DaemonUnavailable("could not start the background player"))
         with patch("mpf_core.MediaPlayerFluere", MagicMock(return_value=player), create=True):
-            output = self._main([PLAYLIST_URL], **{"mpf_core.daemon.stop": MagicMock(return_value=False)})
-        self.assertNotIn("still running", output)
-
-    def test_failed_daemon_start_is_reported(self):
-        player = MagicMock()
-        player.run = AsyncMock()
-        player.detach_on_exit = True
-        player.handed_off = False
-        with patch("mpf_core.MediaPlayerFluere", MagicMock(return_value=player), create=True):
-            output = self._main([PLAYLIST_URL], **{"mpf_core.daemon.stop": MagicMock(return_value=False)})
-        self.assertIn("could not", output.lower())
-        self.assertNotIn("still running", output)
+            with self.assertRaises(SystemExit) as raised:
+                self._main([PLAYLIST_URL])
+        self.assertEqual(raised.exception.code, 1)
 
     def test_daemon_flag_runs_the_engine_alone_without_the_tui(self):
         engine = MagicMock()
@@ -358,59 +262,13 @@ class TestCli(unittest.TestCase):
         engine.run_headless.assert_awaited_once()
         tui.assert_not_called()  # no terminal, numpy or blessed for the background player
 
-
-class TestHandoverCommand(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
-    async def test_handover_returns_the_socket_and_stops_the_headless_player_without_killing_mpv(self):
-        with patch("mpf_core.engine.MPV") as mock_mpv:
-            player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False, headless=True)
-            player.previewer.close()
-            player.term = MagicMock()
-            player.spectrum = MagicMock()
-            player.previewer = MagicMock()
-            player.mpris = MagicMock()
-            player.mpris.start = AsyncMock()
-            player.load_playlist = AsyncMock()
-            player.queue.set_tracks([Track(id="a", title="A", uploader="X")])
-            player.queue.current_idx = 0
-
-            task = asyncio.create_task(player.run())
-            for _ in range(100):
-                if await asyncio.to_thread(daemon.is_running):
-                    break
-                await asyncio.sleep(0.02)
-            expected = player._ipc_socket
-            path = await asyncio.to_thread(daemon.handover)
-            await asyncio.wait_for(task, 5)
-
-        self.assertEqual(path, expected)
-        self.assertIsNone(mock_mpv.return_value.mpv_process)  # disconnect only
-        mock_mpv.return_value.command.assert_not_called()  # in particular no "quit"
-        self.assertFalse(daemon.is_running())
-
-    async def test_handover_is_refused_when_there_is_no_mpv(self):
-        with patch("mpf_core.engine.MPV", side_effect=RuntimeError("no mpv")):
-            player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False, headless=True)
-            player.previewer.close()
-            player.term = MagicMock()
-            player.spectrum = MagicMock()
-            player.previewer = MagicMock()
-            player.mpris = MagicMock()
-            player.mpris.start = AsyncMock()
-            player.load_playlist = AsyncMock()
-
-            task = asyncio.create_task(player.run())
-            for _ in range(100):
-                if await asyncio.to_thread(daemon.is_running):
-                    break
-                await asyncio.sleep(0.02)
-            self.assertIsNone(await asyncio.to_thread(daemon.handover))
-            self.assertTrue(await asyncio.to_thread(daemon.is_running))  # still running, untouched
-            await asyncio.to_thread(daemon.send_command, "quit")
-            await asyncio.wait_for(task, 5)
-
-    def test_no_daemon_means_nothing_to_hand_over(self):
-        with patch("mpf_core.daemon.send_command", return_value=None):
-            self.assertIsNone(daemon.handover())
+    def test_daemon_flag_honours_no_auto_play(self):
+        engine = MagicMock()
+        engine.run_headless = AsyncMock()
+        fake_class = MagicMock(return_value=engine)
+        with patch("mpf_core.engine.PlaybackEngine", fake_class):
+            self._main(["--daemon", "--no-auto-play", PLAYLIST_URL])
+        self.assertFalse(fake_class.call_args.kwargs["auto_play"])
 
 
 class TestSpawnArguments(unittest.TestCase):
@@ -426,217 +284,6 @@ class TestSpawnArguments(unittest.TestCase):
         self.assertNotIn("--adopt-ipc", popen.call_args.args[0])
 
 
-class TestHandoff(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
-    """The TUI keeps its mpv playing and lets the daemon take it over; nothing is restarted."""
-
-    def _tui(self):
-        player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
-        player.previewer.close()
-        player.term = MagicMock()
-        player.term.inkey.return_value = "q"
-        player.spectrum = MagicMock()
-        player.previewer = MagicMock()
-        player.load_playlist = AsyncMock()
-        player._render = MagicMock()
-        player.queue.set_tracks([Track(id="a", title="A", uploader="X")])
-        player.queue.current_idx = 0
-        return player
-
-    async def test_successful_handoff_leaves_mpv_running(self):
-        with patch("mpf_core.engine.MPV") as mock_mpv, patch("mpf_core.daemon.spawn", return_value=True) as spawn, patch(
-            "mpf_core.daemon.is_running", return_value=True
-        ):
-            player = self._tui()
-            await player.run()
-        self.assertTrue(player.handed_off)
-        self.assertEqual(spawn.call_args.kwargs["adopt_ipc"], player._ipc_socket)
-        self.assertIsNone(mock_mpv.return_value.mpv_process)  # terminate() no longer owns a process to kill
-
-    async def test_failed_handoff_stops_mpv_as_before(self):
-        with patch("mpf_core.engine.MPV") as mock_mpv, patch("mpf_core.daemon.spawn", return_value=False):
-            player = self._tui()
-            await player.run()
-        self.assertTrue(player.detach_on_exit)
-        self.assertFalse(player.handed_off)
-        self.assertIsNotNone(mock_mpv.return_value.mpv_process)
-        mock_mpv.return_value.terminate.assert_called_once()
-
-    async def test_a_daemon_that_never_answers_is_not_left_to_start_late(self):
-        with (
-            patch("mpf_core.engine.MPV"),
-            patch("mpf_core.engine.HANDOFF_TIMEOUT_SECONDS", 0.2),
-            patch("mpf_core.daemon.spawn", return_value=True),
-            patch("mpf_core.daemon.is_running", return_value=False),
-            patch("mpf_core.daemon.stop") as stop,
-        ):
-            player = self._tui()
-            await player.run()
-        self.assertFalse(player.handed_off)
-        stop.assert_called_once()
-
-    def _daemon_player(self):
-        player = MediaPlayerFluere(PLAYLIST_URL, auto_play=True, headless=True)
-        self.addCleanup(player.previewer.close)
-        player.queue.set_tracks([Track(id="a", title="A", uploader="X"), Track(id="b", title="B", uploader="X")])
-        player.mpv = MagicMock()
-        player.previewer = MagicMock()
-        return player
-
-    def test_resuming_an_adopted_mpv_does_not_reload_the_track(self):
-        player = self._daemon_player()
-        player._adopting = True
-        player.mpv.path = player.queue.tracks[1].url
-        player._resume_index(1, 42.0)
-        player.mpv.play.assert_not_called()
-        self.assertEqual(player.queue.current_idx, 1)
-        self.assertIsNone(player._pending_seek)
-        self.assertFalse(player._adopting)
-
-    def test_an_adopted_mpv_playing_another_track_is_restarted_on_the_saved_one(self):
-        player = self._daemon_player()
-        player._adopting = True
-        player.mpv.path = player.queue.tracks[0].url
-        player._resume_index(1, 42.0)
-        player.mpv.play.assert_called_once_with(player.queue.tracks[1].url)
-        self.assertEqual(player._pending_seek, ("b", 42.0))
-
-    def test_without_adoption_the_saved_track_starts_normally(self):
-        player = self._daemon_player()
-        player._resume_index(1, 0.0)
-        player.mpv.play.assert_called_once_with(player.queue.tracks[1].url)
-
-    def test_adopting_a_missing_socket_falls_back_to_a_fresh_mpv(self):
-        player = self._daemon_player()
-        player.mpv = None
-        with patch("mpf_core.engine.MPV") as mock_mpv:
-            player._adopt_running_mpv(os.path.join(self._tmp, "gone.sock"))
-        self.assertIsNone(player.mpv)
-        self.assertFalse(player._adopting)
-        mock_mpv.assert_not_called()  # refused before connecting: not a socket we own
-
-
-@unittest.skipUnless(shutil.which("mpv"), "mpv is not installed")
-class TestRealHandoff(RuntimeDirTestCase):
-    """A real mpv plays a synthetic tone; the TUI lets go and a real daemon takes it over without a restart."""
-
-    def test_daemon_takes_over_the_same_mpv_without_interrupting_it(self):
-        import math
-        import struct
-        import wave
-
-        from python_mpv_jsonipc import MPV
-
-        tone = os.path.join(self._tmp, "tone.wav")
-        with wave.open(tone, "wb") as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(2)
-            wav.setframerate(8000)
-            wav.writeframes(
-                b"".join(struct.pack("<h", int(8000 * math.sin(2 * math.pi * 440 * i / 8000))) for i in range(8000 * 60))
-            )
-        sock = os.path.join(self._tmp, "mpv.sock")
-        tui_mpv = MPV(ipc_socket=sock, video=False, ao="null")  # the TUI's mpv, silent
-        process = tui_mpv.mpv_process.process
-        self.addCleanup(process.kill)
-        tui_mpv.play(tone)
-        time.sleep(1.0)
-        before = tui_mpv.time_pos
-        self.assertGreater(before, 0.5)
-
-        script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mpf.py")
-        env = dict(os.environ, XDG_RUNTIME_DIR=self._tmp, XDG_CONFIG_HOME=self._tmp, XDG_CACHE_HOME=self._tmp)
-        config = os.path.join(self._tmp, "config.json")
-        daemon_process = subprocess.Popen(
-            [sys.executable, script, "--daemon", "--config", config, "--adopt-ipc", sock],
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        self.addCleanup(daemon_process.kill)
-        deadline = time.monotonic() + 20
-        while not daemon.is_running() and time.monotonic() < deadline:
-            time.sleep(0.1)
-        self.assertTrue(daemon.is_running(), "daemon never started listening")
-        time.sleep(0.5)  # let it finish connecting to mpv
-
-        # What the TUI does on a handoff: disconnect without killing mpv.
-        tui_mpv.mpv_process = None
-        tui_mpv.terminate()
-        time.sleep(1.0)
-
-        self.assertIsNone(process.poll(), "mpv died when the TUI let go")
-        probe = MPV(start_mpv=False, ipc_socket=sock)
-        after = probe.time_pos
-        probe.terminate()
-        self.assertGreater(after, before + 1.0, "playback was interrupted or restarted")
-
-        quit_run = subprocess.run([sys.executable, script, "quit"], env=env, capture_output=True, text=True, timeout=30)
-        self.assertEqual(quit_run.returncode, 0, quit_run.stderr)
-        self.assertEqual(daemon_process.wait(timeout=20), 0)
-        process.wait(timeout=10)  # the daemon adopted this mpv, so it must stop it too
-
-
-    def test_returning_client_takes_the_playing_mpv_back_from_the_daemon(self):
-        import math
-        import struct
-        import wave
-
-        from python_mpv_jsonipc import MPV
-
-        tone = os.path.join(self._tmp, "tone.wav")
-        with wave.open(tone, "wb") as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(2)
-            wav.setframerate(8000)
-            wav.writeframes(
-                b"".join(struct.pack("<h", int(8000 * math.sin(2 * math.pi * 440 * i / 8000))) for i in range(8000 * 60))
-            )
-        sock = os.path.join(self._tmp, "mpv.sock")
-        first = MPV(ipc_socket=sock, video=False, ao="null")
-        process = first.mpv_process.process
-        self.addCleanup(process.kill)
-        first.play(tone)
-        time.sleep(1.0)
-
-        script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mpf.py")
-        env = dict(os.environ, XDG_RUNTIME_DIR=self._tmp, XDG_CONFIG_HOME=self._tmp, XDG_CACHE_HOME=self._tmp)
-        daemon_process = subprocess.Popen(
-            [sys.executable, script, "--daemon", "--config", os.path.join(self._tmp, "config.json"), "--adopt-ipc", sock],
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        self.addCleanup(daemon_process.kill)
-        deadline = time.monotonic() + 20
-        while not daemon.is_running() and time.monotonic() < deadline:
-            time.sleep(0.1)
-        self.assertTrue(daemon.is_running(), "daemon never started listening")
-        first.mpv_process = None
-        first.terminate()  # the first TUI is gone; the daemon owns this mpv now
-        time.sleep(0.5)
-        probe = MPV(start_mpv=False, ipc_socket=sock)
-        before = probe.time_pos
-        probe.terminate()
-
-        # What a returning TUI does first.
-        with patch.dict(os.environ, {"XDG_RUNTIME_DIR": self._tmp}):
-            handed = daemon.handover()
-        self.assertEqual(handed, sock)
-        self.assertEqual(daemon_process.wait(timeout=20), 0)
-        time.sleep(1.0)
-
-        self.assertIsNone(process.poll(), "mpv died when the daemon handed it over")
-        returning = MPV(start_mpv=False, ipc_socket=handed)
-        after = returning.time_pos
-        returning.command("quit")
-        returning.terminate()
-        self.assertGreater(after, before + 1.0, "playback was interrupted or restarted")
-        process.wait(timeout=10)
-
-
-@unittest.skipUnless(shutil.which("mpv"), "mpv is not installed")
 class TestRealDaemonProcess(RuntimeDirTestCase):
     """End to end with the real script and a real (idle, silent) mpv: no playlist, so no audio at all."""
 

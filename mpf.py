@@ -106,7 +106,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         engine = PlaybackEngine(
             playlist_url=cli_args.url or load_default_playlist(cli_args.config),
-            auto_play=True,
+            auto_play=not cli_args.no_auto_play,
             config_file=cli_args.config,
             headless=True,
             adopt_ipc=cli_args.adopt_ipc,
@@ -119,6 +119,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         return
 
     from mpf_core import MediaPlayerFluere
+    from mpf_core.client import DaemonUnavailable
 
     if cli_args.url == "quit":
         try:
@@ -129,43 +130,27 @@ def main(argv: Optional[List[str]] = None) -> None:
         print("Stopped the MPF background player." if stopped else "MPF is not running in the background.")
         return
 
-    default_playlist = load_default_playlist(cli_args.config)
-    playlist_url = cli_args.url or default_playlist
-    adopt_ipc: Optional[str] = None
-    # A background player left by an earlier session is taken over, so two never play at once. When it is
-    # playing what was asked for, its mpv is adopted and the music carries on; otherwise it is stopped.
-    try:
-        if playlist_url == default_playlist and not cli_args.no_auto_play and not cli_args.force_cache:
-            adopt_ipc = daemon.handover()
-        if adopt_ipc is None:
-            daemon.stop()
-    except TimeoutError as err:
-        print(f"Error: {err}.")
-        raise SystemExit(1) from err
-
+    # The background player owns playback. This only draws it, so a launch attaches to the running one
+    # (starting it first when there is none) and leaving it just disconnects.
     player = MediaPlayerFluere(
-        playlist_url=playlist_url,
-        auto_play=adopt_ipc is not None or not cli_args.no_auto_play,
+        playlist_url=cli_args.url,
+        auto_play=not cli_args.no_auto_play,
         config_file=cli_args.config,
         show_visualizer=False if cli_args.no_visualizer else None,
         show_preview=not cli_args.no_preview,
         vim_mode=cli_args.vim,
-        adopt_ipc=adopt_ipc,
         force_refresh=cli_args.force_cache,
     )
     try:
         asyncio.run(player.run())
+    except DaemonUnavailable as err:
+        print(f"Error: {err}.")
+        raise SystemExit(1) from err
     except KeyboardInterrupt:
-        pass
+        player.close()
 
-    if player.detach_on_exit:
-        if player.handed_off:
-            print(
-                "MPF is still running in the background and keeps playing.\n"
-                f"The only way to stop it is: {sys.argv[0]} quit"
-            )
-        else:
-            print("Could not start the MPF background player; playback stopped.")
+    if player.music_continues:
+        print(f"MPF is still playing in the background. Stop it with: {sys.argv[0]} quit")
 
 
 if __name__ == "__main__":

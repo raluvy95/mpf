@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,6 +17,7 @@ from mpf_core.cache import (
     list_saved_playlists,
     set_playlist_title,
 )
+from mpf_core.client import RemoteEngine
 from mpf_core.config import (
     BAR_POSITIONS,
     COLOR_MODES,
@@ -32,14 +34,11 @@ from mpf_core.config import (
     parse_ytdl_fallback_clients,
     save_bar_position,
     save_color_mode,
-    save_default_playlist,
     save_open_view,
     save_rainbow_colors,
     save_vim_mode,
     save_visualizer_preferences,
-    save_ytdl_fallback_clients,
 )
-from mpf_core.engine import DEFAULT_PLAYLIST_URL, PlaybackEngine
 from mpf_core.fetcher import (
     InvalidMediaURL,
     PlaylistFetchError,
@@ -56,7 +55,7 @@ SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇",
 logger = logging.getLogger(__name__)
 
 
-class MediaPlayerFluere(PlaybackEngine):
+class MediaPlayerFluere(RemoteEngine):
     """Asyncio-driven TUI player using Blessed for true transparent terminal rendering."""
 
     SPECTRUM_CHARS = " .:-=+*#%@"
@@ -74,23 +73,16 @@ class MediaPlayerFluere(PlaybackEngine):
 
     def __init__(
         self,
-        playlist_url: str = DEFAULT_PLAYLIST_URL,
+        playlist_url: str = "",
         auto_play: bool = True,
         config_file: str = CONFIG_FILE,
         show_visualizer: Optional[bool] = None,
         show_preview: bool = True,
         vim_mode: Optional[bool] = None,
-        headless: bool = False,
-        adopt_ipc: Optional[str] = None,
         force_refresh: bool = False,
     ) -> None:
         super().__init__(
-            playlist_url=playlist_url,
-            auto_play=auto_play,
-            config_file=config_file,
-            headless=headless,
-            adopt_ipc=adopt_ipc,
-            force_refresh=force_refresh,
+            playlist_url=playlist_url, auto_play=auto_play, config_file=config_file, force_refresh=force_refresh
         )
         self.term = Terminal()
         self.spectrum = PipeWireSpectrumAnalyzer(num_bands=32, target_node="mpv")
@@ -142,15 +134,18 @@ class MediaPlayerFluere(PlaybackEngine):
         self._move_cache_term: Optional[Terminal] = None
         self._search_origin: Tuple[int, int] = (0, 0)  # selection and scroll before searching
 
-    # ── Engine hooks: what the screen does when playback changes ────────────
+    # ── Hooks: what the screen does when the daemon reports a change ────────
 
     def _notify(self) -> None:
         super()._notify()
         self._render_requested.set()
 
+    def _on_starting_daemon(self) -> None:
+        print("Starting the background player...", flush=True)
+
     def _on_track_started(self, track: Track) -> None:
         self._spectrum_mode = None
-        if self.mpv and self._show_visualizer:
+        if self._connected and self._show_visualizer:
             self.spectrum.resume()  # enable the visualizer once playback begins
         self.previewer.request(track)
 
@@ -180,48 +175,31 @@ class MediaPlayerFluere(PlaybackEngine):
                 min(self._selected_list_idx, max(0, len(self.queue.filtered_tracks) - 1)),
             )
 
-    def _art_path(self, track: Track) -> str:
-        return self.previewer._thumbnail_path(track)
-
     async def run(self) -> None:
-        """Start the engine, then run the screen, keys and mpv polling until quit."""
-        if not await self._start_engine():
-            return
-        if not self.headless:
-            self.spectrum.start()
+        """Attach to the background player, then run the screen and keys until quit."""
+        await self.attach()  # raises DaemonUnavailable or VersionMismatch before the screen is taken over
+        self.spectrum.start()
 
-        # Enter blessed fullscreen mode with mouse click support (a background player has no screen)
         with contextlib.ExitStack() as screen:
-            if not self.headless:
-                screen.enter_context(self.term.fullscreen())
-                screen.enter_context(self.term.cbreak())
-                screen.enter_context(self.term.hidden_cursor())
-                screen.enter_context(self.term.mouse_enabled(report_drag=True))
-            mpv_task = asyncio.create_task(self._mpv_poll_loop())
-            tasks = [mpv_task]
-            if not self.headless:
-                tasks += [asyncio.create_task(self._render_loop()), asyncio.create_task(self._input_loop())]
-
+            screen.enter_context(self.term.fullscreen())
+            screen.enter_context(self.term.cbreak())
+            screen.enter_context(self.term.hidden_cursor())
+            screen.enter_context(self.term.mouse_enabled(report_drag=True))
+            tasks = [asyncio.create_task(self._render_loop()), asyncio.create_task(self._input_loop())]
             try:
                 await asyncio.gather(*tasks)
             except asyncio.CancelledError:
                 pass
             finally:
-                # Decide before the shutdown below changes anything; both q and Ctrl-C end up here.
-                self.detach_on_exit = self._should_detach()
                 self._running = False
-                if self._playlist_task and not self._playlist_task.done():
-                    self._playlist_task.cancel()
                 for task in tasks:
                     if not task.done():
                         task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
-                if not self.headless:
-                    self.previewer.clear()
+                self.previewer.clear()
                 self.previewer.close()
-                if not self.headless:
-                    self.spectrum.stop()
-                await self._stop_engine()
+                self.spectrum.stop()
+                self.close()  # only disconnects: the music carries on in the background player
 
     def _move(self, x: int, y: int) -> str:
         """Return the cursor-positioning sequence for (x, y).
@@ -283,33 +261,31 @@ class MediaPlayerFluere(PlaybackEngine):
 
     def _seek_to_column(self, column: int) -> None:
         """Jump to the point of the track under a mouse column on the progress bar."""
-        if not self._timeline_hit or not self.mpv or self._duration <= 0:
+        if not self._timeline_hit or not self._connected or self._duration <= 0:
             return
         _row, bar_x, bar_width = self._timeline_hit
         fraction = max(0.0, min(1.0, (column - bar_x) / max(1, bar_width - 1)))
         target = fraction * self._duration
-        try:
-            self.mpv.command("seek", target, "absolute")
-            self._time_pos = target
-        except Exception as err:
-            self._status_msg = f"Seek failed: {err}"
-            logger.warning("MPV seek failed: %s", err)
-
-
-
-
-
-
-
-
-
+        self.seek_absolute(target)
 
     async def _input_loop(self) -> None:
+        """Feed keys to the handler from a daemon thread, so quitting never waits for a pending poll.
+
+        The pool thread this replaces had to finish its poll before the interpreter could exit, which put
+        up to ``INPUT_POLL_INTERVAL`` on every quit.
+        """
         loop = asyncio.get_running_loop()
+        keys: asyncio.Queue[Any] = asyncio.Queue()
+
+        def read_keys() -> None:
+            while self._running:
+                key = self.term.inkey(timeout=self.INPUT_POLL_INTERVAL)
+                if key:
+                    loop.call_soon_threadsafe(keys.put_nowait, key)
+
+        threading.Thread(target=read_keys, name="mpf-input", daemon=True).start()
         while self._running:
-            key = await loop.run_in_executor(None, self.term.inkey, self.INPUT_POLL_INTERVAL)
-            if key:
-                self._handle_key(key)
+            self._handle_key(await keys.get())
 
     def _handle_key(self, key: Any) -> None:
         """Dispatch a key and request a redraw only if it changed what is on screen."""
@@ -345,9 +321,7 @@ class MediaPlayerFluere(PlaybackEngine):
                         # line is hidden while a track plays, so the error is drawn under the prompt.
                         self._input_error = str(err)
                         return
-                    if self._playlist_task and not self._playlist_task.done():
-                        self._playlist_task.cancel()
-                    self._playlist_task = asyncio.create_task(self.load_playlist(candidate))
+                    self.load_url(candidate)
                 elif self._input_mode in ("playlist", "clients", "rainbow"):
                     self._apply_setting_input(self._input_mode, self._input_buffer)
                 self._input_mode = "none"
@@ -1052,8 +1026,8 @@ class MediaPlayerFluere(PlaybackEngine):
             except InvalidMediaURL as err:
                 self._settings_msg = str(err)
                 return
-            ok = save_default_playlist(url, self.config_file)
-            self._settings_msg = "Default playlist saved." if ok else "Could not save the configuration."
+            self.set_playback_config(default_playlist=url)  # the background player saves it and reports a failure
+            self._settings_msg = "Default playlist saved." if self._connected else "Not connected to the player."
         elif mode == "rainbow":
             colors = parse_rainbow_colors(text)
             if colors is None:
@@ -1069,11 +1043,9 @@ class MediaPlayerFluere(PlaybackEngine):
             if clients is None:
                 self._settings_msg = "Client names may only use letters, digits and underscores."
                 return
-            if save_ytdl_fallback_clients(clients, self.config_file):
-                self._ytdl_fallback_clients = clients
-                self._settings_msg = "Fallback clients saved."
-            else:
-                self._settings_msg = "Could not save the configuration."
+            self.set_playback_config(fallback_clients=list(clients))
+            self._ytdl_fallback_clients = clients
+            self._settings_msg = "Fallback clients saved." if self._connected else "Not connected to the player."
 
     def _toggle_vim_mode(self) -> None:
         self._vim_mode = not self._vim_mode
