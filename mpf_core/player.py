@@ -191,6 +191,9 @@ class BlessedMusicPlayer:
         self._show_settings = False
         self._settings_msg = ""
         self._settings_idx = 0  # highlighted row on the settings screen
+        self._help_scroll = 0  # first visible body line of help or settings when the terminal is too short
+        self._settings_focus = 0  # line of the highlighted settings row
+        self._settings_footer = 0  # trailing settings lines (prompt or message, hint) kept on screen
         self._status_msg = "Initializing..."
 
         # UI state
@@ -1058,6 +1061,8 @@ class BlessedMusicPlayer:
                 # The help lists this key and shows its state, and the movement keys it documents change
                 # with it, so it must work here and the screen must update.
                 self._toggle_vim_mode()
+            else:
+                self._scroll_help(key, key_name)
             return
 
         if self._show_settings:
@@ -1069,8 +1074,10 @@ class BlessedMusicPlayer:
             self._running = False
         elif key == "?":
             self._show_help = True
+            self._help_scroll = 0
         elif key == ",":
             self._show_settings = True
+            self._help_scroll = 0
             self._settings_msg = ""
         elif key == " ":
             self.set_paused(not self._is_paused)
@@ -1629,6 +1636,7 @@ class BlessedMusicPlayer:
             self._show_settings,
             self._settings_msg,
             self._settings_idx,
+            self._help_scroll,
             self._volume,
             self.queue.repeat_mode,
             self.queue.shuffle_enabled,
@@ -1882,6 +1890,8 @@ class BlessedMusicPlayer:
                     )
                 )
             selected = index == self._settings_idx
+            if selected:
+                self._settings_focus = len(lines)
             value, value_color = self._setting_value(action)
             segments: List[Tuple[Any, str]] = [(getattr(term, f"bold_{color}"), " ›  " if selected else "    ")]
             segments += self._keycap_segments(key, color) if key else [(None, "   ")]
@@ -1893,6 +1903,7 @@ class BlessedMusicPlayer:
             ]
             lines.append(self._paint(segments, width))
         lines.append("")
+        footer_start = len(lines) - 1
         if self._input_mode in ("playlist", "clients", "rainbow"):
             label = {
                 "playlist": "default playlist ",
@@ -1905,6 +1916,7 @@ class BlessedMusicPlayer:
             if self._settings_msg:
                 lines.append(self._paint([(term.dim, f" {self._settings_msg}")], width))
             lines.append(self._paint([(term.dim, " ↑↓ move · Enter or Space change · Esc close")], width))
+        self._settings_footer = len(lines) - footer_start
         return lines
 
     def _screen_lines(
@@ -1948,6 +1960,52 @@ class BlessedMusicPlayer:
                 rows_out.append(line)
         return [self._paint(segments, width) for segments in rows_out]
 
+    def _scroll_help(self, key: Any, key_name: str) -> None:
+        """Scroll the help screen when it is taller than the terminal; the render clamps the offset."""
+        page = max(1, self.term.height - 3)
+        vim = self._vim_mode
+        if key_name in ("KEY_UP", "MOUSE_SCROLL_UP", "MOUSE_WHEEL_UP") or (vim and key == "k"):
+            self._help_scroll -= 1
+        elif key_name in ("KEY_DOWN", "MOUSE_SCROLL_DOWN", "MOUSE_WHEEL_DOWN") or (vim and key == "j"):
+            self._help_scroll += 1
+        elif key_name == "KEY_PGUP":
+            self._help_scroll -= page
+        elif key_name == "KEY_PGDOWN" or key == " ":
+            self._help_scroll += page
+        elif key_name == "KEY_HOME":
+            self._help_scroll = 0
+        elif key_name == "KEY_END":
+            self._help_scroll = 1 << 30
+
+    def _fit_lines(
+        self, lines: List[str], height: int, width: int, focus: Optional[int] = None, footer: int = 0
+    ) -> List[str]:
+        """Cut a screen taller than the terminal to a scrolling window.
+
+        The title line stays on top and the last ``footer`` lines stay at the bottom; the lines between
+        scroll, following ``focus`` (a line index that must stay visible) when given. A dim indicator
+        shows that there is more.
+        """
+        if len(lines) <= height:
+            self._help_scroll = 0
+            return lines
+        foot = lines[len(lines) - footer :] if footer else []
+        body = lines[1 : len(lines) - footer]
+        room = max(1, height - 1 - len(foot) - 1)  # minus the title, the footer and the indicator
+        if focus is not None:
+            focus -= 1  # body index
+            if focus < self._help_scroll:
+                self._help_scroll = focus
+            elif focus >= self._help_scroll + room:
+                self._help_scroll = focus - room + 1
+        self._help_scroll = max(0, min(self._help_scroll, max(0, len(body) - room)))
+        shown = body[self._help_scroll : self._help_scroll + room]
+        more_up, more_down = self._help_scroll > 0, self._help_scroll + room < len(body)
+        arrows = ("↑" if more_up else " ") + ("↓" if more_down else " ")
+        text = f" {arrows} more" + (" · arrows or PgUp/PgDn scroll" if focus is None else "")
+        indicator = self._paint([(self.term.dim, text)], width)
+        return [lines[0]] + shown + [indicator] + foot
+
     def _render_help(self) -> None:
         """Render the help or settings screen without leaving the player."""
         term = self.term
@@ -1961,7 +2019,12 @@ class BlessedMusicPlayer:
             lines += [""] * (term.height - len(lines))
             output = [term.home]
         else:
-            lines = self._settings_lines(width) if self._show_settings else self._help_lines(width)
+            if self._show_settings:
+                lines = self._fit_lines(
+                    self._settings_lines(width), term.height, width, self._settings_focus, self._settings_footer
+                )
+            else:
+                lines = self._fit_lines(self._help_lines(width), term.height, width)
         for row, line in enumerate(lines[: term.height]):
             # The dialog repaints over the dashboard, so its two margin columns are blanked too.
             margin = self._move(0, row) + "  " if self._input_mode == "url" else self._move(2, row)

@@ -1863,3 +1863,69 @@ class TestCacheSizeLimits(unittest.TestCase):
         path = self._write("config.json", b'{"vim_mode": false, "pad": "' + b"x" * 4096 + b'"}')
         with patch.object(config, "MAX_CONFIG_BYTES", 1024):
             self.assertTrue(config.load_vim_mode(path))  # default, not the file's false
+
+
+class TestShortTerminalScreens(unittest.TestCase):
+    def _player(self, height):
+        import tempfile
+
+        from mpf_core.player import BlessedMusicPlayer
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        player = BlessedMusicPlayer(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
+        self.addCleanup(player.previewer.close)
+        TestOpenDialog._resize(player, 80, height)
+        return player
+
+    @staticmethod
+    def _key(name):
+        return type("Key", (str,), {"name": name, "is_sequence": True})("")
+
+    def _plain(self, player, lines):
+        return [TestOpenDialog._strip(line) for line in lines]
+
+    def test_a_screen_that_fits_is_left_alone(self):
+        player = self._player(40)
+        lines = player._help_lines(77)
+        self.assertEqual(player._fit_lines(lines, 40, 77), lines)
+
+    def test_help_scrolls_so_every_line_can_be_reached(self):
+        player = self._player(12)
+        player._handle_key("?")
+        everything = self._plain(player, player._help_lines(77))
+        seen = set()
+        for _ in range(40):
+            shown = self._plain(player, player._fit_lines(player._help_lines(77), 12, 77))
+            self.assertLessEqual(len(shown), 12)
+            self.assertEqual(shown[0], everything[0])  # the title stays on top
+            seen.update(line for line in shown if line.strip())
+            player._handle_key(self._key("KEY_DOWN"))
+        self.assertTrue({line for line in everything if line.strip()} <= seen)
+
+    def test_help_end_pgup_home_and_clamping(self):
+        player = self._player(12)
+        player._handle_key("?")
+        player._handle_key(self._key("KEY_END"))
+        last = self._plain(player, player._fit_lines(player._help_lines(77), 12, 77))
+        self.assertEqual(last[-2].strip(), self._plain(player, player._help_lines(77))[-1].strip())
+        self.assertIn("↑", last[-1])
+        self.assertNotIn("↓", last[-1])  # nothing below the end
+        player._handle_key(self._key("KEY_DOWN"))  # past the end stays at the end
+        self.assertEqual(self._plain(player, player._fit_lines(player._help_lines(77), 12, 77)), last)
+        player._handle_key(self._key("KEY_HOME"))
+        first = self._plain(player, player._fit_lines(player._help_lines(77), 12, 77))
+        self.assertNotIn("↑", first[-1])
+        self.assertIn("↓", first[-1])
+
+    def test_settings_keep_the_selected_row_and_the_hint_visible(self):
+        player = self._player(10)
+        player._handle_key(",")
+        rows = len(player.SETTINGS_ROWS)
+        for _ in range(rows):
+            lines = player._settings_lines(77)
+            shown = self._plain(player, player._fit_lines(lines, 10, 77, player._settings_focus, player._settings_footer))
+            self.assertLessEqual(len(shown), 10)
+            self.assertTrue(any("›" in line for line in shown), shown)  # the cursor row is on screen
+            self.assertIn("Esc close", shown[-1])
+            player._handle_key(self._key("KEY_DOWN"))
