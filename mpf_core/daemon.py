@@ -14,7 +14,7 @@ import stat
 import subprocess
 import sys
 import time
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 from mpf_core.paths import CACHE_DIR
 
@@ -156,8 +156,35 @@ def handover(timeout: float = 10.0) -> Optional[str]:
     return reply[3:]
 
 
-async def serve(on_quit: Callable[[], None], on_handover: Optional[Callable[[], Optional[str]]] = None) -> DaemonServer:
-    """Listen for control commands; raises DaemonAlreadyRunning if another daemon is listening."""
+def legacy_reply(
+    command: str, on_quit: Callable[[], None], on_handover: Optional[Callable[[], Optional[str]]] = None
+) -> str:
+    """Answer one of the plain-text control lines (``ping``, ``quit``, ``handover``)."""
+    if command == "ping":
+        return "ok"
+    if command == "quit":
+        on_quit()
+        return "ok"
+    if command == "handover":
+        socket_file = on_handover() if on_handover else None
+        return f"ok {socket_file}" if socket_file else "error: cannot hand over"
+    return "error: unknown command"
+
+
+Handler = Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]
+
+
+async def serve(
+    on_quit: Callable[[], None],
+    on_handover: Optional[Callable[[], Optional[str]]] = None,
+    handler: Optional[Handler] = None,
+    line_limit: int = 2**16,
+) -> DaemonServer:
+    """Listen on the private control socket; raises DaemonAlreadyRunning if another daemon is listening.
+
+    Without ``handler`` each connection sends one plain-text control line. A ``handler`` takes over every
+    connection instead (the playback server, which still answers those lines itself).
+    """
     path = socket_path()
     if await asyncio.to_thread(is_running):  # off the loop: a probe must not block a loop that may be serving
         raise DaemonAlreadyRunning(f"another background player is listening on {path}")
@@ -166,27 +193,17 @@ async def serve(on_quit: Callable[[], None], on_handover: Optional[Callable[[], 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             line = await asyncio.wait_for(reader.readline(), 2.0)
-            command = line[:_COMMAND_LIMIT].decode(errors="replace").strip()
-            if command == "ping":
-                reply = "ok"
-            elif command == "quit":
-                reply = "ok"
-                on_quit()
-            elif command == "handover":
-                socket_file = on_handover() if on_handover else None
-                reply = f"ok {socket_file}" if socket_file else "error: cannot hand over"
-            else:
-                reply = "error: unknown command"
+            reply = legacy_reply(line[:_COMMAND_LIMIT].decode(errors="replace").strip(), on_quit, on_handover)
             writer.write(reply.encode() + b"\n")
             await writer.drain()
-        except (asyncio.TimeoutError, ConnectionError):
+        except (asyncio.TimeoutError, ConnectionError, ValueError):
             pass
         finally:
             writer.close()
 
     previous_umask = os.umask(0o177)
     try:
-        server = await asyncio.start_unix_server(handle, path=path)
+        server = await asyncio.start_unix_server(handler or handle, path=path, limit=line_limit)
     finally:
         os.umask(previous_umask)
     os.chmod(path, 0o600)

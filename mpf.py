@@ -98,9 +98,29 @@ def main(argv: Optional[List[str]] = None) -> None:
     # Lazy loading
     import asyncio
 
-    from mpf_core import MediaPlayerFluere, daemon
+    from mpf_core import daemon
 
-    if cli_args.url == "quit" and not cli_args.daemon:
+    if cli_args.daemon:
+        # The background player runs the engine alone: no terminal, numpy or blessed.
+        from mpf_core.engine import PlaybackEngine
+
+        engine = PlaybackEngine(
+            playlist_url=cli_args.url or load_default_playlist(cli_args.config),
+            auto_play=True,
+            config_file=cli_args.config,
+            headless=True,
+            adopt_ipc=cli_args.adopt_ipc,
+            force_refresh=cli_args.force_cache,
+        )
+        try:
+            asyncio.run(engine.run_headless())
+        except KeyboardInterrupt:
+            pass
+        return
+
+    from mpf_core import MediaPlayerFluere
+
+    if cli_args.url == "quit":
         try:
             stopped = daemon.stop()
         except TimeoutError as err:
@@ -112,27 +132,25 @@ def main(argv: Optional[List[str]] = None) -> None:
     default_playlist = load_default_playlist(cli_args.config)
     playlist_url = cli_args.url or default_playlist
     adopt_ipc: Optional[str] = None
-    if not cli_args.daemon:
-        # A background player left by an earlier session is taken over, so two never play at once. When it is
-        # playing what was asked for, its mpv is adopted and the music carries on; otherwise it is stopped.
-        try:
-            if playlist_url == default_playlist and not cli_args.no_auto_play and not cli_args.force_cache:
-                adopt_ipc = daemon.handover()
-            if adopt_ipc is None:
-                daemon.stop()
-        except TimeoutError as err:
-            print(f"Error: {err}.")
-            raise SystemExit(1) from err
+    # A background player left by an earlier session is taken over, so two never play at once. When it is
+    # playing what was asked for, its mpv is adopted and the music carries on; otherwise it is stopped.
+    try:
+        if playlist_url == default_playlist and not cli_args.no_auto_play and not cli_args.force_cache:
+            adopt_ipc = daemon.handover()
+        if adopt_ipc is None:
+            daemon.stop()
+    except TimeoutError as err:
+        print(f"Error: {err}.")
+        raise SystemExit(1) from err
 
     player = MediaPlayerFluere(
         playlist_url=playlist_url,
-        auto_play=cli_args.daemon or adopt_ipc is not None or not cli_args.no_auto_play,
+        auto_play=adopt_ipc is not None or not cli_args.no_auto_play,
         config_file=cli_args.config,
-        show_visualizer=False if cli_args.daemon or cli_args.no_visualizer else None,
-        show_preview=not (cli_args.daemon or cli_args.no_preview),
+        show_visualizer=False if cli_args.no_visualizer else None,
+        show_preview=not cli_args.no_preview,
         vim_mode=cli_args.vim,
-        headless=cli_args.daemon,
-        adopt_ipc=cli_args.adopt_ipc if cli_args.daemon else adopt_ipc,
+        adopt_ipc=adopt_ipc,
         force_refresh=cli_args.force_cache,
     )
     try:

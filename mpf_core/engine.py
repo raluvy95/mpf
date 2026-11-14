@@ -41,6 +41,7 @@ from mpf_core.models import RepeatMode, Track, TrackQueue
 from mpf_core.mpris import MprisService, build_metadata
 from mpf_core.paths import CONFIG_FILE
 from mpf_core.previewer import thumbnail_path
+from mpf_core.server import PlayerServer
 
 DEFAULT_PLAYLIST_URL = ""
 HANDOFF_TIMEOUT_SECONDS = 10.0  # how long the TUI waits for the background player to take over mpv
@@ -112,7 +113,7 @@ class PlaybackEngine:
         self._adopting = False  # connected to that mpv and not yet resumed from the saved state
         self._handing_over = False  # a returning TUI asked this background player to give up its mpv
         self._ipc_socket: Optional[str] = None
-        self._daemon_server: Optional[daemon.DaemonServer] = None
+        self._server: Optional[PlayerServer] = None  # the background player's socket, when headless
         self.config_file = config_file
         self.playlist_url = playlist_url or load_default_playlist(config_file)
         self.auto_play = auto_play
@@ -164,6 +165,33 @@ class PlaybackEngine:
     def volume(self) -> int:
         return self._volume
 
+    def state(self) -> Dict[str, Any]:
+        """Everything a client needs to draw the player, as plain values (the queue is sent separately)."""
+        return {
+            "playlist_url": self.playlist_url,
+            "current_idx": self.queue.current_idx,
+            "paused": self._is_paused,
+            "muted": self._is_muted,
+            "buffering": self._is_buffering,
+            "idle": self._mpv_idle,
+            "loading": self._is_loading_playlist,
+            "volume": self._volume,
+            "position": round(self._time_pos, 2),
+            "duration": round(self._duration, 2),
+            "repeat": self.queue.repeat_mode.value,
+            "shuffle": self.queue.shuffle_enabled,
+            "status": self._status_msg,
+            "queue_revision": self.queue.revision,
+        }
+
+    def load_url(self, url: str, auto_play: Optional[bool] = None, force: bool = False) -> None:
+        """Load a validated playlist or video URL in the background, replacing any load in progress."""
+        if auto_play is not None:
+            self.auto_play = auto_play
+        if self._playlist_task and not self._playlist_task.done():
+            self._playlist_task.cancel()
+        self._playlist_task = asyncio.create_task(self.load_playlist(url, force=force))
+
     # ── Hooks a client overrides; the engine itself has no screen ───────────
 
     def _notify(self) -> None:
@@ -206,11 +234,13 @@ class PlaybackEngine:
         """Start mpv and MPRIS and begin loading the playlist; False if this daemon must not run."""
         self._loop = asyncio.get_running_loop()
         if self.headless:
+            server = PlayerServer(self)
             try:
-                self._daemon_server = await daemon.serve(self._request_quit, self._request_handover)
+                await server.start()
             except daemon.DaemonAlreadyRunning as err:
                 logger.error("%s", err)
                 return False
+            self._server = server
             try:
                 self._loop.add_signal_handler(signal.SIGTERM, self._request_quit)
             except (NotImplementedError, RuntimeError):
@@ -235,6 +265,20 @@ class PlaybackEngine:
         else:
             self._status_msg = "Load a YouTube playlist or video with [o]URL."
         return True
+
+    async def run_headless(self) -> None:
+        """Run as the background player: serve clients and follow mpv until told to quit."""
+        if not await self._start_engine():
+            return
+        try:
+            await self._mpv_poll_loop()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._running = False
+            if self._playlist_task and not self._playlist_task.done():
+                self._playlist_task.cancel()
+            await self._stop_engine()
 
     async def _stop_engine(self) -> None:
         """Save state and release mpv, MPRIS and the daemon socket; run after the poll loop has stopped."""
@@ -263,9 +307,9 @@ class PlaybackEngine:
                 self.mpv = None
         if self._ipc_dir and not keep_mpv:
             shutil.rmtree(self._ipc_dir, ignore_errors=True)
-        if self._daemon_server:
-            self._daemon_server.close()
-            self._daemon_server = None
+        if self._server:
+            self._server.close()
+            self._server = None
 
     # ── Playback ────────────────────────────────────────────────────────────
 

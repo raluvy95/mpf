@@ -345,17 +345,18 @@ class TestCli(unittest.TestCase):
         self.assertIn("could not", output.lower())
         self.assertNotIn("still running", output)
 
-    def test_daemon_flag_builds_a_headless_player(self):
-        player = MagicMock()
-        player.run = AsyncMock()
-        fake_class = MagicMock(return_value=player)
-        with patch("mpf_core.MediaPlayerFluere", fake_class, create=True):
+    def test_daemon_flag_runs_the_engine_alone_without_the_tui(self):
+        engine = MagicMock()
+        engine.run_headless = AsyncMock()
+        fake_class = MagicMock(return_value=engine)
+        tui = MagicMock()
+        with patch("mpf_core.engine.PlaybackEngine", fake_class), patch("mpf_core.MediaPlayerFluere", tui, create=True):
             self._main(["--daemon", PLAYLIST_URL])
         kwargs = fake_class.call_args.kwargs
         self.assertTrue(kwargs["headless"])
         self.assertTrue(kwargs["auto_play"])
-        self.assertFalse(kwargs["show_visualizer"])
-        self.assertFalse(kwargs["show_preview"])
+        engine.run_headless.assert_awaited_once()
+        tui.assert_not_called()  # no terminal, numpy or blessed for the background player
 
 
 class TestHandoverCommand(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
