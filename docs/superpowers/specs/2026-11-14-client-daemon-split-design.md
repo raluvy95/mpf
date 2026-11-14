@@ -22,6 +22,7 @@ dialogs, thumbnails). MPRIS also reads its private fields (`_p.queue`, `_p._time
 | Clients | Many at once, sharing state; any client may send commands, applied in arrival order. |
 | Daemon lifetime | Resident until `mpf.py quit`; it does not exit when the last client leaves or when paused. |
 | Class name | `BlessedMusicPlayer` is renamed `MediaPlayerFluere` and becomes the TUI client class. |
+| Daemon weight | Lightweight: a translation layer between mpv and the clients. It keeps only what must run with no client attached (mpv control, queue and track advance, playlist loading and caching, resume state, MPRIS). Anything that exists to draw, the visualizer included, lives in the client. The daemon imports neither numpy nor blessed. |
 
 ## Processes and modules
 
@@ -32,11 +33,11 @@ nothing else, so quitting is immediate and the music is untouched.
 
 | Module | Role |
 |---|---|
-| `engine.py`: `PlaybackEngine` | Daemon side. mpv, `TrackQueue`, playlist loading and caching, prefetch and read-ahead, resume state, MPRIS, visualizer capture and analysis. Imports no `blessed`. |
+| `engine.py`: `PlaybackEngine` | Daemon side. mpv, `TrackQueue`, playlist loading and caching, prefetch and read-ahead, resume state, MPRIS. Imports neither numpy nor `blessed`. |
 | `protocol.py` | Message schema, protocol version, size limits, encode and validate. |
 | `server.py` | Accepts clients, registry, broadcast, dispatches commands to the engine, drops slow clients. |
 | `client.py` | Connection, handshake, local state mirror, spawns the daemon when absent. |
-| `player.py`: `MediaPlayerFluere` | TUI client. Rendering and input only, reading the mirror and sending commands. |
+| `player.py`: `MediaPlayerFluere` | TUI client. Rendering and input, reading the mirror and sending commands. Runs the visualizer itself: `pw-record` on the mpv node and the numpy analysis, as today. |
 
 Entry points: `mpf.py` (client), `mpf.py --daemon` (engine and server), `mpf.py quit` (shutdown command).
 
@@ -66,17 +67,18 @@ show "the background player is an older version, run `mpf.py quit` to update"; i
 - `queue` frames of up to 500 tracks each, using the cache's compact tuple format; resent only when the queue
   revision changes.
 - `state` frames carry only changed fields; position at no more than 10 Hz, everything else at once.
-- `bands`: about 32 floats at no more than 30 frames per second, only to clients that sent `subscribe_bands`.
-  Capture runs only while at least one client is subscribed and audio plays. The learned gain therefore lives
-  as long as the daemon.
+
+There is no visualizer stream: each client captures the mpv node with `pw-record` and analyses it locally,
+using the play state from the mirror to run, freeze or clear its bars as today. The learned gain lives for
+the client's run, as it does now.
 
 **Commands (client to daemon):** `play_index`, `set_paused`, `next`, `prev`, `seek_rel`, `seek_abs`,
 `set_volume`, `set_mute`, `set_shuffle`, `cycle_repeat`, `load_url`, `force_refresh`, `set_playback_config`
-(default playlist, fallback clients), `subscribe_bands`, `shutdown`. Only `load_url` is answered, with `ack` or
+(default playlist, fallback clients), `shutdown`. Only `load_url` is answered, with `ack` or
 `error`, so an invalid URL still appears under the open dialog.
 
-**On the client:** fuzzy search over the mirrored queue (no round trip), selection, scroll, dialogs, help and
-settings screens, thumbnails, and the display preferences (visualizer style, bar position, colour mode, Vim
+**On the client:** the visualizer, fuzzy search over the mirrored queue (no round trip), selection, scroll,
+dialogs, help and settings screens, thumbnails, and the display preferences (visualizer style, bar position, colour mode, Vim
 keys, open view), which stay in `config.json`. The daemon writes only the playback keys (default playlist,
 fallback clients); the existing atomic config writes cover the two writers.
 
@@ -87,6 +89,7 @@ Each step is one commit with pytest, ruff and mypy green and the app working.
 1. Rename `BlessedMusicPlayer` to `MediaPlayerFluere` (code, tests, docs, exports).
 2. `protocol.py` with tests.
 3. Extract `PlaybackEngine`; the player runs it in-process. MPRIS uses the engine's interface, not private fields.
+   The visualizer stays in the player.
 4. `server.py`; daemon mode becomes engine plus server, replacing the headless, adopt and hand-off code.
 5. `client.py` and the state mirror; `MediaPlayerFluere` renders from the mirror; default launch attaches.
 6. Remove the old hand-off, adopt and spawn-on-quit paths; `mpf.py quit` shuts the daemon down; update the README.
@@ -102,17 +105,20 @@ Each step is one commit with pytest, ruff and mypy green and the app working.
 ## Testing
 
 - `protocol.py`: unit tests, including oversize and malformed input.
+- Daemon weight: a test imports the daemon's modules in a fresh interpreter and fails if numpy or blessed
+  ends up in `sys.modules`, so the daemon cannot quietly grow heavy again.
 - Engine: tests with a fake mpv, as the player tests do now.
 - Server and client: integration tests over a real unix socket in a temporary runtime directory, with a fake
   engine and no audio.
-- Audio and visualizer: a synthetic signal played into PipeWire with `pw-play --target 0` and captured with
-  the real `pw-record` command. Never the user's music or system audio.
+- Audio and visualizer (client side): a synthetic signal played into PipeWire with `pw-play --target 0` and
+  captured with the real `pw-record` command. Never the user's music or system audio.
 - Latency: measure quit time before (about 700 ms) and after, and attach time.
 
 ## Success criteria
 
 - Quitting a client while music plays takes under 50 ms.
 - Music does not gap when a client quits or attaches.
+- The daemon imports neither numpy nor blessed, and uses no visualizer CPU with no client attached.
 - Every existing feature keeps working.
 
 ## Risks
