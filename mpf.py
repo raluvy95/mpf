@@ -6,6 +6,7 @@ import argparse
 import logging
 import logging.handlers
 import os
+import sys
 from typing import List, Optional
 
 from mpf_core.config import load_default_playlist
@@ -24,7 +25,7 @@ def parse_cli_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         "url",
         nargs="?",
         default=DEFAULT_PLAYLIST_URL,
-        help="YouTube playlist or video URL to play",
+        help="YouTube playlist or video URL to play, or 'quit' to stop the background player",
     )
     parser.add_argument(
         "--no-auto-play",
@@ -47,6 +48,7 @@ def parse_cli_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Disable Kitty thumbnail previews for this session",
     )
+    parser.add_argument("--daemon", action="store_true", help=argparse.SUPPRESS)  # internal: the background player
     vim_group = parser.add_mutually_exclusive_group()
     vim_group.add_argument("--vim", dest="vim", action="store_true", help="Enable Vim navigation keys")
     vim_group.add_argument("--no-vim", dest="vim", action="store_false", help="Disable Vim navigation keys")
@@ -83,28 +85,55 @@ def configure_logging(
     logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
-def main() -> None:
-    cli_args = parse_cli_args()
+def main(argv: Optional[List[str]] = None) -> None:
+    cli_args = parse_cli_args(argv)
     configure_logging()
 
     # Lazy loading
     import asyncio
 
-    from mpf_core import BlessedMusicPlayer
-    
+    from mpf_core import BlessedMusicPlayer, daemon
+
+    if cli_args.url == "quit" and not cli_args.daemon:
+        try:
+            stopped = daemon.stop()
+        except TimeoutError as err:
+            print(f"Error: {err}.")
+            raise SystemExit(1) from err
+        print("Stopped the MPF background player." if stopped else "MPF is not running in the background.")
+        return
+
+    if not cli_args.daemon:
+        # A background player left by an earlier session is taken over, so two never play at once.
+        try:
+            daemon.stop()
+        except TimeoutError as err:
+            print(f"Error: {err}.")
+            raise SystemExit(1) from err
+
     playlist_url = cli_args.url or load_default_playlist(cli_args.config)
     player = BlessedMusicPlayer(
         playlist_url=playlist_url,
-        auto_play=not cli_args.no_auto_play,
+        auto_play=cli_args.daemon or not cli_args.no_auto_play,
         config_file=cli_args.config,
-        show_visualizer=None if not cli_args.no_visualizer else False,
-        show_preview=not cli_args.no_preview,
+        show_visualizer=False if cli_args.daemon or cli_args.no_visualizer else None,
+        show_preview=not (cli_args.daemon or cli_args.no_preview),
         vim_mode=cli_args.vim,
+        headless=cli_args.daemon,
     )
     try:
         asyncio.run(player.run())
     except KeyboardInterrupt:
         pass
+
+    if player.detach_on_exit:
+        if daemon.spawn(player.playlist_url, cli_args.config):
+            print(
+                "MPF is still running in the background and keeps playing.\n"
+                f"The only way to stop it is: {sys.argv[0]} quit"
+            )
+        else:
+            print("Could not start the MPF background player; playback stopped.")
 
 
 if __name__ == "__main__":

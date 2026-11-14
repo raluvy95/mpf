@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import secrets
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -20,6 +22,7 @@ import numpy as np
 from blessed import Terminal
 from python_mpv_jsonipc import MPV
 
+from mpf_core import daemon
 from mpf_core.cache import (
     PlaybackState,
     is_playlist_cache_stale,
@@ -134,7 +137,11 @@ class BlessedMusicPlayer:
         show_visualizer: Optional[bool] = None,
         show_preview: bool = True,
         vim_mode: Optional[bool] = None,
+        headless: bool = False,
     ) -> None:
+        self.headless = headless  # background player: no terminal, visualizer or thumbnails
+        self.detach_on_exit = False  # set by run() when the caller should keep playing in the background
+        self._daemon_server: Optional[daemon.DaemonServer] = None
         self.term = Terminal()
         self.config_file = config_file
         self.playlist_url = playlist_url or load_default_playlist(config_file)
@@ -207,9 +214,34 @@ class BlessedMusicPlayer:
         self._move_cache_term: Optional[Terminal] = None
         self._search_origin: Tuple[int, int] = (0, 0)  # selection and scroll before searching
 
+    def _should_detach(self) -> bool:
+        """Whether leaving the TUI should keep the music playing in a background process.
+
+        Only audio that is playing is kept: a paused player, or one with nothing loaded, just exits.
+        """
+        return (
+            not self.headless
+            and self.mpv is not None
+            and self.queue.current_track is not None
+            and not self._is_paused
+        )
+
+    def _request_quit(self) -> None:
+        self._running = False
+
     async def run(self) -> None:
         """Run the main async event loop with Blessed context managers."""
         self._loop = asyncio.get_running_loop()
+        if self.headless:
+            try:
+                self._daemon_server = await daemon.serve(self._request_quit)
+            except daemon.DaemonAlreadyRunning as err:
+                logger.error("%s", err)
+                return
+            try:
+                self._loop.add_signal_handler(signal.SIGTERM, self._request_quit)
+            except (NotImplementedError, RuntimeError):
+                pass
         try:
             ipc_socket, self._ipc_dir = _private_ipc_socket()
             with _mpv_environment():
@@ -231,41 +263,51 @@ class BlessedMusicPlayer:
             self._status_msg = f"MPV startup failed; verify mpv is installed: {err}"
             logger.exception("MPV startup failed")
 
-        self.spectrum.start()
+        if not self.headless:
+            self.spectrum.start()
         await self.mpris.start()
         if self.playlist_url:
             self._playlist_task = asyncio.create_task(self.load_playlist(self.playlist_url))
         else:
             self._status_msg = "Load a YouTube playlist or video with [o]URL."
 
-        # Enter blessed fullscreen mode with mouse click support
-        with self.term.fullscreen(), self.term.cbreak(), self.term.hidden_cursor(), \
-                self.term.mouse_enabled(report_drag=True):
-            render_task = asyncio.create_task(self._render_loop())
-            input_task = asyncio.create_task(self._input_loop())
+        # Enter blessed fullscreen mode with mouse click support (a background player has no screen)
+        with contextlib.ExitStack() as screen:
+            if not self.headless:
+                screen.enter_context(self.term.fullscreen())
+                screen.enter_context(self.term.cbreak())
+                screen.enter_context(self.term.hidden_cursor())
+                screen.enter_context(self.term.mouse_enabled(report_drag=True))
             mpv_task = asyncio.create_task(self._mpv_poll_loop())
+            tasks = [mpv_task]
+            if not self.headless:
+                tasks += [asyncio.create_task(self._render_loop()), asyncio.create_task(self._input_loop())]
 
             try:
-                await asyncio.gather(render_task, input_task, mpv_task)
+                await asyncio.gather(*tasks)
             except asyncio.CancelledError:
                 pass
             finally:
+                # Decide before the shutdown below changes anything; both q and Ctrl-C end up here.
+                self.detach_on_exit = self._should_detach()
                 self._running = False
                 if self._playlist_task and not self._playlist_task.done():
                     self._playlist_task.cancel()
-                for task in (render_task, input_task, mpv_task):
+                for task in tasks:
                     if not task.done():
                         task.cancel()
-                await asyncio.gather(render_task, input_task, mpv_task, return_exceptions=True)
+                await asyncio.gather(*tasks, return_exceptions=True)
                 if self._playlist_task:
                     await asyncio.gather(self._playlist_task, return_exceptions=True)
                 if self._state_save:
                     # Let an in-flight periodic save finish so it cannot overwrite the final one.
                     await asyncio.gather(self._state_save, return_exceptions=True)
                 self._save_current_state()
-                self.previewer.clear()
+                if not self.headless:
+                    self.previewer.clear()
                 self.previewer.close()
-                self.spectrum.stop()
+                if not self.headless:
+                    self.spectrum.stop()
                 self.mpris.stop()
                 self._set_power_inhibit(False)
                 if self.mpv:
@@ -277,6 +319,9 @@ class BlessedMusicPlayer:
                         self.mpv = None
                 if self._ipc_dir:
                     shutil.rmtree(self._ipc_dir, ignore_errors=True)
+                if self._daemon_server:
+                    self._daemon_server.close()
+                    self._daemon_server = None
 
     def _move(self, x: int, y: int) -> str:
         """Return the cursor-positioning sequence for (x, y).
