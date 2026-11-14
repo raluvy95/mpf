@@ -398,6 +398,31 @@ class TestKittyPreviewer(unittest.TestCase):
                 previewer.render_many(placements[:1])
                 self.assertEqual(run.call_count, 3)
 
+    def test_render_many_draws_only_new_thumbnails_as_they_arrive(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image = os.path.join(tmpdir, "fallback.svg")
+            with open(image, "w", encoding="utf-8") as file:
+                file.write("<svg/>")
+            previewer = KittyPreviewer(thumbs_dir=tmpdir, fallback_icon=image)
+            self.addCleanup(previewer.close)
+            previewer.has_kitty = True
+            tracks = [Track(f"v{n}", "T") for n in range(4)]
+            placements = [(track, 2 + n * 24, 6, 22, 6) for n, track in enumerate(tracks)]
+            with patch("mpf_core.previewer.subprocess.run", return_value=MagicMock(returncode=0)) as run, patch.object(
+                previewer, "clear", wraps=previewer.clear
+            ) as clear:
+                previewer.render_many(placements, fallback=False)  # nothing downloaded: nothing drawn
+                self.assertEqual(run.call_count, 0)
+                for track in tracks:
+                    with open(previewer._thumbnail_path(track), "wb") as file:
+                        file.write(b"x")
+                    previewer.render_many(placements, fallback=False)
+                self.assertEqual(run.call_count, 4)  # one draw each, none repeated
+                clear.reset_mock()
+                previewer.render_many(placements[1:], fallback=False)  # scrolled: a tile left
+                self.assertEqual(clear.call_count, 1)
+                self.assertEqual(run.call_count, 7)
+
     def test_render_skips_icat_terminal_autodetection(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             image = os.path.join(tmpdir, "fallback.svg")

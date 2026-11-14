@@ -1961,7 +1961,7 @@ class BlessedMusicPlayer:
             output.append(margin + line + term.clear_eol)
         print("".join(output), end="", flush=True)
         if placements:
-            self.previewer.render_many(placements)
+            self.previewer.render_many(placements, fallback=False)
 
     @staticmethod
     def _progress_meter(width: int, progress: float) -> str:

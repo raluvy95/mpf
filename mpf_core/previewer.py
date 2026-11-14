@@ -56,8 +56,11 @@ class KittyPreviewer:
         safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", track.id)[:128] or "thumbnail"
         return os.path.join(self.thumbs_dir, f"{safe_id}.jpg")
 
-    def get_cached_image_path(self, track: Optional[Track]) -> str:
-        """Return an existing thumbnail without performing network I/O."""
+    def get_cached_image_path(self, track: Optional[Track], fallback: bool = True) -> str:
+        """Return an existing thumbnail without performing network I/O.
+
+        Without a downloaded thumbnail this is the generic icon, or "" when ``fallback`` is False.
+        """
         if track:
             local_path = self._thumbnail_path(track)
             try:
@@ -67,7 +70,7 @@ class KittyPreviewer:
                     return local_path
             except OSError:
                 pass
-        return self.fallback_icon if os.path.exists(self.fallback_icon) else ""
+        return self.fallback_icon if fallback and os.path.exists(self.fallback_icon) else ""
 
     def get_local_image_path(self, track: Optional[Track]) -> str:
         """Compatibility wrapper that downloads synchronously outside rendering."""
@@ -164,11 +167,15 @@ class KittyPreviewer:
         """Render image in terminal cell rect using kitty icat."""
         self.render_many([(track, x, y, width, height)])
 
-    def render_many(self, placements: Sequence[Tuple[Optional[Track], int, int, int, int]]) -> None:
+    def render_many(
+        self, placements: Sequence[Tuple[Optional[Track], int, int, int, int]], fallback: bool = True
+    ) -> None:
         """Render several thumbnails, each as (track, x, y, width, height) in cells.
 
-        Nothing is drawn again while the same images sit at the same places, and a track whose
-        thumbnail has not downloaded yet is left out until it has.
+        Nothing is drawn again while the same images sit at the same places. Every draw starts a kitty
+        process, so images that are only added to what is already shown are drawn alone, without clearing
+        the others. With ``fallback`` False a track whose thumbnail has not downloaded yet is left out
+        (instead of showing the generic icon), so its image is simply added once it arrives.
         """
         if not self.has_kitty:
             return
@@ -176,19 +183,24 @@ class KittyPreviewer:
         for track, x, y, width, height in placements:
             if width <= 0 or height <= 0:
                 continue
-            img_path = self.get_cached_image_path(track)
+            img_path = self.get_cached_image_path(track, fallback)
             if img_path and os.path.exists(img_path):
                 wanted.append((img_path, x, y, width, height))
         state_key = tuple(wanted)
         if not wanted:
             self.clear()
             return
-        if self._current_rendered == state_key:
+        shown = self._current_rendered or ()
+        if shown == state_key:
             return
-        if self._current_rendered:
-            self.clear()
+        if shown and set(shown) <= set(state_key):
+            added = [item for item in wanted if item not in shown]
+        else:
+            if shown:
+                self.clear()
+            added = wanted
         self._current_rendered = state_key
-        for img_path, x, y, width, height in wanted:
+        for img_path, x, y, width, height in added:
             self._icat(img_path, x, y, width, height)
 
     def _icat(self, img_path: str, x: int, y: int, width: int, height: int) -> None:
