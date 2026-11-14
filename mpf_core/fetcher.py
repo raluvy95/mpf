@@ -68,11 +68,11 @@ def _host_environment() -> Dict[str, str]:
     return env
 
 
-def _extract_info_with_executable(executable: str, url: str) -> Any:
+def _extract_info_with_executable(executable: str, url: str, first_only: bool = False) -> Any:
     """List a playlist with the system yt-dlp, the same one mpv uses to play it, so it stays current."""
     try:
         result = subprocess.run(
-            [executable, "-J", "--flat-playlist", "--no-warnings", "--", url],
+            [executable, "-J", "--flat-playlist", "--no-warnings", *(["--playlist-items", "1"] if first_only else []), "--", url],
             stdin=subprocess.DEVNULL,  # never compete with the TUI for keystrokes
             capture_output=True,
             text=True,
@@ -116,6 +116,18 @@ def _extract_info_with_module(url: str, ydl_opts: Optional[Dict[str, Any]]) -> A
         raise PlaylistFetchError(f"Unable to retrieve URL: {clean_text(redact_urls(str(err)))}") from err
     except OSError as err:
         raise PlaylistFetchError(f"Network error while retrieving URL: {clean_text(redact_urls(str(err)))}") from err
+
+
+def fetch_playlist_title(url: str) -> str:
+    """Just the title of a playlist or video, asking for one entry so a long playlist is not listed."""
+    url = validate_media_url(url)
+    executable = shutil.which("yt-dlp")
+    info = (
+        _extract_info_with_executable(executable, url, first_only=True)
+        if executable
+        else _extract_info_with_module(url, {"playlist_items": "1"})
+    )
+    return clean_text(info.get("title"), TITLE_LIMIT) if isinstance(info, dict) else ""
 
 
 class Playlist(NamedTuple):

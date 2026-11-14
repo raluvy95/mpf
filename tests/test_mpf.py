@@ -1596,6 +1596,27 @@ class TestOpenDialog(unittest.TestCase):
         self.assertIn(player._move(0, 0) + "  ", out.getvalue())
         self.assertIn(player._move(0, 5) + "  ", out.getvalue())
 
+    def test_opening_the_dialog_looks_up_missing_titles_once_and_saves_them(self):
+        from unittest.mock import patch
+
+        async def scenario():
+            player = self._player()
+            for item in self._saved:
+                item.titled = item.name != "Mix 1"  # only this one has no title
+            self._saved[1].name = "Playlist P1"
+            with patch("mpf_core.player.fetch_playlist_title", return_value="Real name") as fetch, patch(
+                "mpf_core.player.set_playlist_title", return_value=True
+            ) as save:
+                player._handle_key("o")
+                await player._title_task
+            return player, fetch, save
+
+        player, fetch, save = asyncio.run(scenario())
+        fetch.assert_called_once_with(self.URLS[1])
+        save.assert_called_once_with(self.URLS[1], "Real name")
+        self.assertEqual(player._open_saved[1].name, "Real name")
+        self.assertEqual(player._open_titles, 1)
+
     @staticmethod
     def _strip(text):
         import re

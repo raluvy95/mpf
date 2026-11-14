@@ -1268,3 +1268,18 @@ class SavedPlaylistTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(list_saved_playlists(os.path.join(tmp, "none")), [])
+
+
+    def test_a_title_can_be_added_to_an_entry_saved_without_one(self):
+        from mpf_core.cache import list_saved_playlists, set_playlist_title
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_file = os.path.join(tmp, "playlists.mpk.zst")
+            url = "https://www.youtube.com/playlist?list=OLD"
+            save_cached_playlist(url, [Track("a", "A"), Track("b", "B")], cache_file)
+            self.assertFalse(list_saved_playlists(cache_file)[0].titled)
+            before = list_saved_playlists(cache_file)[0].cached_at
+            self.assertTrue(set_playlist_title(url, "Chill", cache_file))
+            (item,) = list_saved_playlists(cache_file)
+            self.assertEqual((item.name, item.titled, item.count, item.cached_at), ("Chill", True, 2, before))
+            self.assertFalse(set_playlist_title("https://youtu.be/none", "x", cache_file))

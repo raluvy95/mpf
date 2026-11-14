@@ -33,6 +33,7 @@ from mpf_core.cache import (
     load_playback_state,
     save_cached_playlist,
     save_playback_state,
+    set_playlist_title,
 )
 from mpf_core.config import (
     BAR_POSITIONS,
@@ -62,6 +63,7 @@ from mpf_core.fetcher import (
     InvalidMediaURL,
     PlaylistFetchError,
     fetch_playlist,
+    fetch_playlist_title,
     validate_media_url,
 )
 from mpf_core.metadata import clean_text, redact_urls
@@ -199,6 +201,8 @@ class BlessedMusicPlayer:
         self._open_saved: List[SavedPlaylist] = []  # playlists the open dialog offers, newest first
         self._open_idx = 0  # highlighted saved playlist
         self._open_scroll = 0  # first visible saved playlist
+        self._open_titles = 0  # bumped whenever a missing playlist title arrives, to redraw the dialog
+        self._title_task: Optional[asyncio.Task[None]] = None
         self._time_pos = 0.0
         self._duration = 0.0
         self._last_state_save = 0.0
@@ -1116,6 +1120,8 @@ class BlessedMusicPlayer:
             self._input_error = ""
             self._open_saved = list_saved_playlists()
             self._open_idx = self._open_scroll = 0
+            if any(not item.titled for item in self._open_saved) and not (self._title_task and not self._title_task.done()):
+                self._title_task = asyncio.create_task(self._fill_missing_titles(list(self._open_saved)))
         elif (self._vim_mode and key == "k") or (
             not self._vim_mode and key_name == "KEY_UP"
         ):
@@ -1171,6 +1177,25 @@ class BlessedMusicPlayer:
             (term.bold_yellow_reverse, text[local : local + 1] or " "),
             (term.bold_yellow, text[local + 1 :] + suffix),
         ]
+
+    async def _fill_missing_titles(self, saved: List[SavedPlaylist]) -> None:
+        """Look up the title of every saved playlist that has none, one at a time, and keep it for good."""
+        loop = asyncio.get_running_loop()
+        for item in saved:
+            if item.titled:
+                continue
+            try:
+                title = await loop.run_in_executor(None, fetch_playlist_title, item.url)
+            except PlaylistFetchError as err:
+                logger.warning("Unable to look up the title of %s: %s", item.url, err)
+                continue
+            except Exception:
+                logger.exception("Unexpected failure looking up the title of %s", item.url)
+                continue
+            if title and set_playlist_title(item.url, title):
+                item.name, item.titled = title, True
+                self._open_titles += 1
+                self._render_requested.set()
 
     TILE_WIDTH = 22  # a thumbnail tile: the image is this many cells wide...
     TILE_IMAGE_ROWS = 6  # ...and this many tall (about 16:9), with the name on the row below and a blank one after
@@ -1580,6 +1605,7 @@ class BlessedMusicPlayer:
             self._input_error,
             self._open_idx,
             self._open_scroll,
+            self._open_titles,
             self._is_paused,
             self._is_muted,
             self._is_loading_playlist,

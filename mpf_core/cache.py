@@ -245,6 +245,7 @@ class SavedPlaylist:
     count: int
     cover: Optional[Track]  # first track: its thumbnail stands in for the playlist's own
     cached_at: float
+    titled: bool = True  # False while ``name`` is a stand-in because no title was saved
 
 
 def _fallback_playlist_name(url: str, first: Optional[Track], count: int) -> str:
@@ -275,9 +276,25 @@ def list_saved_playlists(cache_file: str = PLAYLIST_CACHE_FILE) -> List[SavedPla
             continue
         title = entry.get("title")
         name = title if isinstance(title, str) and title else _fallback_playlist_name(url, cover, len(rows))
-        saved.append(SavedPlaylist(url, name, len(rows), cover, cached_at))
+        saved.append(SavedPlaylist(url, name, len(rows), cover, cached_at, titled=name == title))
     saved.sort(key=lambda item: item.cached_at, reverse=True)
     return saved
+
+
+def set_playlist_title(url: str, title: str, cache_file: str = PLAYLIST_CACHE_FILE) -> bool:
+    """Record a playlist's title in its cache entry, leaving its tracks and sync time alone."""
+    try:
+        with _cache_lock(cache_file, exclusive=True):
+            cache = _read_binary_cache_unlocked(cache_file) or {}
+            entry = cache.get(url)
+            if not isinstance(entry, dict):
+                return False
+            entry["title"] = title
+            _write_binary_cache(cache, cache_file)
+        return True
+    except (OSError, TypeError, ValueError, zstd.ZstdError) as err:
+        logger.error("Unable to save playlist title in %s: %s", cache_file, err)
+        return False
 
 
 # ── Playback state ────────────────────────────────────────────────────────────
