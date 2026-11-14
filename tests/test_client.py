@@ -93,12 +93,13 @@ class TestMirror(ClientTestCase):
 
     async def test_malformed_frames_are_ignored_not_fatal(self):
         player = await self.attached()
+        volume_before = player._volume
         player._apply({"t": "state", "volume": "loud", "position": None})
         player._apply({"t": "state", "repeat": "Sideways"})
         player._apply({"t": "queue", "revision": "x"})
         player._apply({"t": "queue", "revision": 5, "chunk": 0, "chunks": 1, "tracks": [["only-an-id"], 7, ["ok", "T", 1, "U"]]})
         player._apply({"t": "from-the-future"})
-        self.assertEqual(player._volume, 100)
+        self.assertEqual(player._volume, volume_before)
         self.assertEqual([t.id for t in player.queue.tracks], ["ok"])  # unusable rows are skipped
 
     async def test_starting_a_track_tells_the_screen_once(self):

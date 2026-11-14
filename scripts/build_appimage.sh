@@ -31,6 +31,7 @@ mkdir -p "$(dirname "${OUTPUT}")"
     --hidden-import mpf_core.cache \
     --hidden-import mpf_core.client \
     --hidden-import mpf_core.config \
+    --hidden-import mpf_core.control \
     --hidden-import mpf_core.daemon \
     --hidden-import mpf_core.engine \
     --hidden-import mpf_core.fetcher \

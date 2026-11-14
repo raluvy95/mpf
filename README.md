@@ -84,12 +84,30 @@ Set `MPF_VERSION`, `PYTHON_BIN`, or `OUTPUT` to override the build defaults.
 ```text
 mpf.py [--no-auto-play] [--config PATH] [--no-visualizer] [--no-preview]
        [--force-cache] [--vim | --no-vim] [--version] [url]
+mpf.py play | pause | toggle | next | prev | volume [N] | seek TIME | status [--json] | quit
 ```
 
 Run `mpf.py --help` for the full option list.
 
 A playlist is cached and re-synced after a week. `--force-cache` fetches it from YouTube again right away and
 replaces the cached copy: the cached tracks play meanwhile, and if YouTube cannot be reached they stay.
+
+### Controlling a running player
+
+The same command can drive the player without opening the screen, for key bindings, scripts and status bars:
+
+```sh
+mpf.py pause            # also: play, toggle, next, prev
+mpf.py volume 40        # also: volume +5, volume -5, and volume alone prints it
+mpf.py seek +30         # also: seek -10, seek 90, seek 1:30 (a time) and seek -1:05 (by an amount)
+mpf.py status           # Playing: <title>, then position, volume, repeat, shuffle and track number
+mpf.py status --json    # the same as one line of JSON, for a status bar
+```
+
+These only talk to a player that is already running: with none, they say so and exit with status 1 and never
+start one. Bad arguments exit with status 2. The JSON has `state` (`playing`, `paused` or `stopped`), `title`,
+`uploader`, `id`, `url`, `position`, `duration`, `volume`, `muted`, `repeat`, `shuffle`, `index`, `count` and
+`playlist_url`.
 
 ### The background player
 

@@ -18,15 +18,20 @@ __version__ = "1.2.0"  # x-release-please-version
 
 
 def parse_cli_args(args: Optional[List[str]] = None) -> argparse.Namespace:
+    from mpf_core.control import ALL_COMMANDS, USAGE_HELP, check_usage
+
     parser = argparse.ArgumentParser(
-        description="Terminal YouTube playlist player with MPV, Kitty previews, and audio visualization"
+        description="Terminal YouTube playlist player with MPV, Kitty previews, and audio visualization",
+        epilog=USAGE_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "url",
         nargs="?",
         default=DEFAULT_PLAYLIST_URL,
-        help="YouTube playlist or video URL to play, or 'quit' to stop the background player",
+        help="YouTube playlist or video URL to play, or a control command (see below)",
     )
+    parser.add_argument("value", nargs="?", help=argparse.SUPPRESS)  # the argument of a control command
     parser.add_argument(
         "--no-auto-play",
         action="store_true",
@@ -58,8 +63,20 @@ def parse_cli_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     vim_group.add_argument("--vim", dest="vim", action="store_true", help="Enable Vim navigation keys")
     vim_group.add_argument("--no-vim", dest="vim", action="store_false", help="Disable Vim navigation keys")
     parser.set_defaults(vim=None)
+    parser.add_argument("--json", action="store_true", help="With status: print it as JSON")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    return parser.parse_args(args)
+    parsed = parser.parse_args(args)
+    if parsed.url in ALL_COMMANDS:
+        problem = check_usage(parsed.url, parsed.value, parsed.json) if parsed.url != "quit" else (
+            "quit takes no argument" if parsed.value is not None or parsed.json else None
+        )
+    elif parsed.value is not None or parsed.json:
+        problem = "unexpected argument" if parsed.value is not None else "--json only applies to the status command"
+    else:
+        problem = None
+    if problem:
+        parser.error(problem)
+    return parsed
 
 
 class _PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
@@ -118,6 +135,16 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     from mpf_core import MediaPlayerFluere
     from mpf_core.client import DaemonUnavailable
+    from mpf_core.control import COMMANDS as CONTROL_COMMANDS
+
+    if cli_args.url in CONTROL_COMMANDS:
+        from mpf_core import control
+
+        try:
+            exit_code = asyncio.run(control.run(cli_args.url, cli_args.value, cli_args.json, cli_args.config))
+        except KeyboardInterrupt:
+            exit_code = 130
+        raise SystemExit(exit_code)
 
     if cli_args.url == "quit":
         try:

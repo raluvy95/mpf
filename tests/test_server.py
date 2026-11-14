@@ -23,6 +23,10 @@ class FakeEngine:
         self.queue = TrackQueue([Track("a", "A", 10.0, "U"), Track("b", "B")])
         self.paused = False
         self.position = 0.0
+        self.duration = 100.0
+        self.volume = 70
+        self.idle = False
+        self.shuffle = False
         self.status = "ready"
         self.on_change = None
         self.calls = []
@@ -35,6 +39,12 @@ class FakeEngine:
             "current_idx": self.queue.current_idx,
             "paused": self.paused,
             "position": self.position,
+            "duration": self.duration,
+            "volume": self.volume,
+            "muted": False,
+            "idle": self.idle,
+            "buffering": False,
+            "shuffle": self.shuffle,
             "repeat": RepeatMode.ALL.value,
             "status": self.status,
             "queue_revision": self.queue.revision,
@@ -56,6 +66,19 @@ class FakeEngine:
 
     def next_track(self):
         self.calls.append(("next",))
+
+    def previous_track(self):
+        self.calls.append(("prev",))
+
+    def set_volume(self, volume):
+        self.calls.append(("set_volume", volume))
+        self.volume = volume
+
+    def seek_relative(self, seconds):
+        self.calls.append(("seek_rel", seconds))
+
+    def seek_absolute(self, seconds):
+        self.calls.append(("seek_abs", seconds))
 
     def load_url(self, url, auto_play=None, force=False):
         self.calls.append(("load_url", url, auto_play, force))

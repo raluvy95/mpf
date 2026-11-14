@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import io
+import json
 import os
 import shutil
 import stat
@@ -323,6 +324,54 @@ class TestRealDaemonProcess(RuntimeDirTestCase):
         self.assertIn("stopped", quit_run.stdout.lower())
         self.assertEqual(process.wait(timeout=20), 0)
         self.assertFalse(daemon.is_running())
+
+
+class TestRealControlCommands(RuntimeDirTestCase):
+    """The real script and a real idle daemon (no playlist, so no audio): the commands work end to end."""
+
+    def _mpf(self, *args, env):
+        script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mpf.py")
+        return subprocess.run([sys.executable, script, *args], env=env, capture_output=True, text=True, timeout=30)
+
+    def test_commands_against_a_running_player(self):
+        env = dict(os.environ, XDG_RUNTIME_DIR=self._tmp, XDG_CONFIG_HOME=self._tmp, XDG_CACHE_HOME=self._tmp)
+        script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mpf.py")
+        # Before any player exists: a clear message, exit 1, and nothing is started.
+        result = self._mpf("status", env=env)
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("not running", result.stderr)
+        self.assertFalse(daemon.is_running())
+
+        process = subprocess.Popen(
+            [sys.executable, script, "--daemon", "--config", os.path.join(self._tmp, "config.json")],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(process.kill)
+        deadline = time.monotonic() + 20
+        while not daemon.is_running() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertTrue(daemon.is_running(), "daemon never started listening")
+
+        info = json.loads(self._mpf("status", "--json", env=env).stdout)
+        self.assertEqual((info["state"], info["volume"], info["count"]), ("stopped", 100, 0))
+        self.assertEqual(self._mpf("status", env=env).stdout, "Stopped: nothing playing\n")
+
+        self.assertEqual(self._mpf("volume", "40", env=env).returncode, 0)
+        self.assertEqual(self._mpf("volume", env=env).stdout.strip(), "40")
+        self.assertEqual(self._mpf("volume", "-15", env=env).returncode, 0)
+        self.assertEqual(self._mpf("volume", env=env).stdout.strip(), "25")
+        for command in ("pause", "play", "toggle", "next", "prev"):  # nothing loaded: harmless, still exit 0
+            self.assertEqual(self._mpf(command, env=env).returncode, 0, command)
+        self.assertEqual(self._mpf("seek", "+30", env=env).returncode, 0)
+        self.assertEqual(self._mpf("seek", "soon", env=env).returncode, 2)
+        self.assertTrue(daemon.is_running())  # none of that disturbed the player
+
+        quit_run = self._mpf("quit", env=env)
+        self.assertEqual(quit_run.returncode, 0, quit_run.stderr)
+        self.assertEqual(process.wait(timeout=20), 0)
 
 
 if __name__ == "__main__":
