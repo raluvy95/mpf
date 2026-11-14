@@ -29,7 +29,7 @@ _HELP_ROWS = (
       ("cmd", "next"), ("", " | "), ("cmd", "prev")], ""),
     ([("cmd", "volume"), ("", " ["), ("label", "N"), ("", " | "), ("label", "+N"), ("", " | "),
       ("label", "-N"), ("", "]")], "show or set the volume, 0-100"),
-    ([("cmd", "seek"), ("", " [+|-]"), ("label", "SECONDS")],
+    ([("cmd", "seek"), ("", " [+ | -]"), ("label", "SECONDS")],
      "jump to, or by, a time; M:SS and H:MM:SS work too"),
     ([("cmd", "status"), ("", " ["), ("opt", "--json"), ("", "]")], "what is playing"),
     ([("cmd", "quit")], "stop the background player"),

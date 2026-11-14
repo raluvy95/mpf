@@ -312,6 +312,11 @@ class TestHelpColours(unittest.TestCase):
         }
         self.assertEqual(len(starts), 1, lines)
 
+    def test_no_character_pairs_that_fonts_draw_as_one_glyph(self):
+        # Programming fonts turn "|-" into a tee (so "[+|-]" looked like "[+├]"): keep such pairs apart.
+        for pair in ("|-", "-|", "|=", "=|", "<-", "->", "=>", "<=", "!="):
+            self.assertNotIn(pair, self._section(self._help()), pair)
+
     def test_a_missing_theme_gives_the_plain_text(self):
         self.assertEqual(control.usage_help(None), control.USAGE_HELP)
         self.assertNotIn("\x1b", control.USAGE_HELP)
