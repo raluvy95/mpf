@@ -49,6 +49,7 @@ def parse_cli_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         help="Disable Kitty thumbnail previews for this session",
     )
     parser.add_argument("--daemon", action="store_true", help=argparse.SUPPRESS)  # internal: the background player
+    parser.add_argument("--adopt-ipc", metavar="SOCKET", help=argparse.SUPPRESS)  # internal: take over a playing mpv
     vim_group = parser.add_mutually_exclusive_group()
     vim_group.add_argument("--vim", dest="vim", action="store_true", help="Enable Vim navigation keys")
     vim_group.add_argument("--no-vim", dest="vim", action="store_false", help="Disable Vim navigation keys")
@@ -120,6 +121,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         show_preview=not (cli_args.daemon or cli_args.no_preview),
         vim_mode=cli_args.vim,
         headless=cli_args.daemon,
+        adopt_ipc=cli_args.adopt_ipc if cli_args.daemon else None,
     )
     try:
         asyncio.run(player.run())
@@ -127,7 +129,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         pass
 
     if player.detach_on_exit:
-        if daemon.spawn(player.playlist_url, cli_args.config):
+        if player.handed_off:
             print(
                 "MPF is still running in the background and keeps playing.\n"
                 f"The only way to stop it is: {sys.argv[0]} quit"

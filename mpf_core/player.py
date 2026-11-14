@@ -67,6 +67,7 @@ from mpf_core.previewer import KittyPreviewer
 from mpf_core.visualizer import PipeWireSpectrumAnalyzer
 
 DEFAULT_PLAYLIST_URL = ""
+HANDOFF_TIMEOUT_SECONDS = 10.0  # how long the TUI waits for the background player to take over mpv
 PREFETCH_LEAD_SECONDS = 20.0  # queue the next track in mpv this close to the end of the current one
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -140,9 +141,14 @@ class BlessedMusicPlayer:
         show_preview: bool = True,
         vim_mode: Optional[bool] = None,
         headless: bool = False,
+        adopt_ipc: Optional[str] = None,
     ) -> None:
         self.headless = headless  # background player: no terminal, visualizer or thumbnails
         self.detach_on_exit = False  # set by run() when the caller should keep playing in the background
+        self.handed_off = False  # the background player took over this player's mpv, which is still playing
+        self._adopt_ipc = adopt_ipc  # IPC socket of an mpv that is already playing and should be taken over
+        self._adopting = False  # connected to that mpv and not yet resumed from the saved state
+        self._ipc_socket: Optional[str] = None
         self._daemon_server: Optional[daemon.DaemonServer] = None
         self.term = Terminal()
         self.config_file = config_file
@@ -220,6 +226,74 @@ class BlessedMusicPlayer:
         self._move_cache_term: Optional[Terminal] = None
         self._search_origin: Tuple[int, int] = (0, 0)  # selection and scroll before searching
 
+    def _mpv_options(self) -> Dict[str, Any]:
+        return {
+            "log_handler": self._on_mpv_log,
+            "loglevel": "error",
+        }
+
+    def _start_own_mpv(self) -> None:
+        ipc_socket, self._ipc_dir = _private_ipc_socket()
+        self._ipc_socket = ipc_socket
+        with _mpv_environment():
+            self.mpv = MPV(
+                ipc_socket=ipc_socket,
+                video=False,
+                ytdl=True,
+                ytdl_format="bestaudio/best",
+                cache="yes",
+                demuxer_max_bytes="25M",
+                demuxer_readahead_secs=str(self._readahead.secs),
+                prefetch_playlist="yes",
+                stop_screensaver="yes",
+                **self._mpv_options(),
+            )
+
+    def _adopt_running_mpv(self, socket_path: str) -> None:
+        """Connect to the mpv the TUI left playing. On any problem, fall back to starting a fresh one."""
+        try:
+            info = os.stat(socket_path)
+            if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+                raise OSError(f"{socket_path} is not a socket owned by this user")
+            mpv = MPV(start_mpv=False, ipc_socket=socket_path, **self._mpv_options())
+            mpv.command("playlist-clear")  # drops a prefetched next track; the playing one stays
+        except Exception:
+            logger.exception("Unable to take over the running mpv; starting a new one")
+            return
+        self.mpv = mpv
+        self._ipc_socket = socket_path
+        # The socket sits in a private mpf-* directory when there was no $XDG_RUNTIME_DIR; it is ours to remove.
+        parent = os.path.dirname(socket_path)
+        self._ipc_dir = parent if os.path.basename(parent).startswith("mpf-") else None
+        self._adopting = True
+
+    def _hand_off_to_daemon(self) -> bool:
+        """Start the background player on this player's mpv and wait until it answers, so playback never stops."""
+        if not self._ipc_socket or not daemon.spawn(self.playlist_url, self.config_file, adopt_ipc=self._ipc_socket):
+            return False
+        deadline = time.monotonic() + HANDOFF_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if daemon.is_running():
+                return True
+            time.sleep(0.1)
+        with contextlib.suppress(Exception):
+            daemon.stop(timeout=2.0)  # it may still come up late; it must not play after we stop the music
+        return False
+
+    def _resume_index(self, index: int, start_pos: float) -> None:
+        """Start the saved track, or, when an already playing mpv was adopted, carry on with it untouched."""
+        adopted, self._adopting = self._adopting, False
+        track = self.queue.tracks[index] if 0 <= index < len(self.queue.tracks) else None
+        if adopted and track and self.mpv:
+            try:
+                adopted = self.mpv.path == track.url
+            except Exception:
+                adopted = False
+        if adopted:
+            self._play_index(index, loaded=True)  # reloading it would be the audible gap this avoids
+        else:
+            self._play_index(index, start_pos=start_pos)
+
     def _should_detach(self) -> bool:
         """Whether leaving the TUI should keep the music playing in a background process.
 
@@ -249,23 +323,13 @@ class BlessedMusicPlayer:
             except (NotImplementedError, RuntimeError):
                 pass
         try:
-            ipc_socket, self._ipc_dir = _private_ipc_socket()
-            with _mpv_environment():
-                self.mpv = MPV(
-                    ipc_socket=ipc_socket,
-                    video=False,
-                    ytdl=True,
-                    ytdl_format="bestaudio/best",
-                    cache="yes",
-                    demuxer_max_bytes="25M",
-                    demuxer_readahead_secs=str(self._readahead.secs),
-                    prefetch_playlist="yes",
-                    stop_screensaver="yes",
-                    log_handler=self._on_mpv_log,
-                    loglevel="error",
-                )
-            self.mpv.bind_event("end-file", self._on_mpv_end_file)
-            self.mpv.bind_event("file-loaded", self._on_mpv_file_loaded)
+            if self._adopt_ipc:
+                self._adopt_running_mpv(self._adopt_ipc)
+            if self.mpv is None:
+                self._start_own_mpv()
+            if self.mpv:
+                self.mpv.bind_event("end-file", self._on_mpv_end_file)
+                self.mpv.bind_event("file-loaded", self._on_mpv_file_loaded)
         except Exception as err:
             self._status_msg = f"MPV startup failed; verify mpv is installed: {err}"
             logger.exception("MPV startup failed")
@@ -317,14 +381,21 @@ class BlessedMusicPlayer:
                     self.spectrum.stop()
                 self.mpris.stop()
                 self._set_power_inhibit(False)
+                if self.detach_on_exit and self.mpv:
+                    # Start the background player while mpv is still playing here, so there is no gap.
+                    self.handed_off = await asyncio.to_thread(self._hand_off_to_daemon)
                 if self.mpv:
                     try:
+                        if self.handed_off:
+                            self.mpv.mpv_process = None  # disconnect only: mpv keeps playing for the daemon
+                        elif self.headless and self._adopt_ipc and self._ipc_socket == self._adopt_ipc:
+                            self.mpv.command("quit")  # we did not start this mpv, so terminate() would leave it
                         self.mpv.terminate()
                     except Exception:
                         logger.exception("MPV shutdown failed")
                     finally:
                         self.mpv = None
-                if self._ipc_dir:
+                if self._ipc_dir and not self.handed_off:
                     shutil.rmtree(self._ipc_dir, ignore_errors=True)
                 if self._daemon_server:
                     self._daemon_server.close()
@@ -404,7 +475,7 @@ class BlessedMusicPlayer:
             self._selected_list_idx = target_idx
             self.queue.current_idx = target_idx
             if self.auto_play:
-                self._play_index(target_idx, start_pos=start_pos)
+                self._resume_index(target_idx, start_pos)
 
         # 2. Fetch fresh tracks only when cache is missing or older than 7 days
         if not is_playlist_cache_stale(url):
@@ -461,7 +532,7 @@ class BlessedMusicPlayer:
                 self._selected_list_idx = target_idx
                 self.queue.current_idx = target_idx
                 if self.auto_play:
-                    self._play_index(target_idx, start_pos=start_pos)
+                    self._resume_index(target_idx, start_pos)
         except PlaylistFetchError as err:
             self._status_msg = f"Offline; using cached playlist. {err}" if cached else f"Fetch Error: {err}"
             logger.warning("Playlist refresh failed for %s: %s", url, err)
