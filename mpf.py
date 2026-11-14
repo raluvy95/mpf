@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 from mpf_core.paths import CACHE_DIR, CONFIG_FILE, LOG_FILE
 
 DEFAULT_PLAYLIST_URL = ""
-__version__ = "1.2.0"  # x-release-please-version
+__version__ = "1.3.0"  # x-release-please-version
 
 
 def _help_formatter_class() -> Any:

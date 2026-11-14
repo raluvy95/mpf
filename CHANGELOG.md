@@ -1,5 +1,55 @@
 # Changelog
 
+## [1.3.0](https://github.com/raluvy95/mpf/compare/v1.2.0...v1.3.0) (2026-11-14)
+
+
+### Features
+
+* adapt read-ahead to stalls and prefetch the next track ([7df4a00](https://github.com/raluvy95/mpf/commit/7df4a000accb3f250d9f0f41d1a059b709405fce))
+* add --force-cache to fetch a playlist again and replace its cache ([6fec1ab](https://github.com/raluvy95/mpf/commit/6fec1abf13406419adeddb08d9a688727793abab))
+* add a background mode with a headless player controlled over a unix socket ([470d1ce](https://github.com/raluvy95/mpf/commit/470d1ced71600dd6ac630280c8fd95f426c40bed))
+* add an open dialog view setting (list or thumbnails) ([f1fd9e5](https://github.com/raluvy95/mpf/commit/f1fd9e506c71794eb0e2bc789b9568b07de52b34))
+* add control subcommands (pause, next, volume, seek, status) ([cbaf2bc](https://github.com/raluvy95/mpf/commit/cbaf2bcc7b6f25b6a819737f47e2e172a2b90111))
+* add the client/daemon wire protocol ([696a75f](https://github.com/raluvy95/mpf/commit/696a75fee66f64fb2a9563668cbef56846e5c376))
+* colour the control commands in --help like the rest of it ([3bfff33](https://github.com/raluvy95/mpf/commit/3bfff33ca798df606d39d0afb76543eb177a1c88))
+* navigate settings with arrows and change rows with Enter or Space ([68836de](https://github.com/raluvy95/mpf/commit/68836dea22bd1c7e2cafddec17a098d7421f4798))
+* redesign the open dialog as a full screen with saved playlists ([5e13e19](https://github.com/raluvy95/mpf/commit/5e13e1971ba6925269a592f5e9ce9b84a441080b))
+* replace the quit-time hand-off with a resident playback daemon ([bbc3170](https://github.com/raluvy95/mpf/commit/bbc317017290c9a1758e6dab168b828684218a83))
+* run the TUI as a client of the playback daemon ([e6308d1](https://github.com/raluvy95/mpf/commit/e6308d1159b08a2aad376690be8e7871c2f17843))
+* save playlist titles and list the saved playlists ([83c8d4b](https://github.com/raluvy95/mpf/commit/83c8d4b662bec487f71afb0549192ab287ad6ad3))
+* serve the playback engine over the daemon socket ([e03d52d](https://github.com/raluvy95/mpf/commit/e03d52d3812b8419b5ee792c7f70c0e20ec6306c))
+* show saved playlists as a thumbnail grid in the open dialog ([69c6b4a](https://github.com/raluvy95/mpf/commit/69c6b4a1644d8d0f294e2337cdb2388dd41bdf7f))
+* take the playing mpv back from the background player when the TUI returns ([b5fd9d3](https://github.com/raluvy95/mpf/commit/b5fd9d37681accfc9f0678c227f4fc0118aeb7d4))
+
+
+### Bug Fixes
+
+* blank the margin columns in the open dialog ([9c57e8e](https://github.com/raluvy95/mpf/commit/9c57e8e43b66b1b306337674a5ae20fa6dd83df8))
+* hand the playing mpv to the background player instead of restarting it ([22f1736](https://github.com/raluvy95/mpf/commit/22f1736e56a119eee36f5b72744fa205a67a3d6c))
+* keep "|" and "-" apart in the seek help so fonts do not join them ([a27dbd5](https://github.com/raluvy95/mpf/commit/a27dbd5f9d0866ea6af5fa20f99f2670ff9f54d6))
+* keep help and settings drawn from column 2 ([ca62f8c](https://github.com/raluvy95/mpf/commit/ca62f8ce301eda79013386e6d2b19dd46db339da))
+* keep the visualizer's autosens ramp from restarting every track ([4f1c4b8](https://github.com/raluvy95/mpf/commit/4f1c4b8e062faa4fe1d3256a5e58acd6ff097f6c))
+* look up missing playlist titles when the open dialog opens ([27aea3a](https://github.com/raluvy95/mpf/commit/27aea3af0151a537fb2cd1d3e27ccba7594f27cb))
+* never let a thumbnail download hold up quitting ([672239a](https://github.com/raluvy95/mpf/commit/672239a2cf579e5d61599c1beb200032bf0c62fd))
+* never let extractor output choose the URL mpv opens ([f5b8cf6](https://github.com/raluvy95/mpf/commit/f5b8cf6841ff5a6f03de0058eb6fa67094b143df))
+* scroll the help and settings screens on short terminals ([54d2c76](https://github.com/raluvy95/mpf/commit/54d2c767d28c5cba0636885c7f4c71d2f4044b16))
+* tell the user to run mpf.py quit when an older background player is running ([4e11cad](https://github.com/raluvy95/mpf/commit/4e11cad238bec6f10c569fe6c3b90410a893eb7c))
+* validate and clean saved playlists read from the cache ([e9e7bed](https://github.com/raluvy95/mpf/commit/e9e7bed5e679d094e6053512cabc27c2f4509f66))
+
+
+### Performance Improvements
+
+* draw thumbnail grid tiles as they arrive instead of redrawing all ([5d9037a](https://github.com/raluvy95/mpf/commit/5d9037a5d3a1fa5d16afcdbc44df8aafa03e9048))
+* make the control commands start fast ([d25c2f4](https://github.com/raluvy95/mpf/commit/d25c2f4adeaaff1788e44d3f13d2ffcec6e01fce))
+
+
+### Documentation
+
+* describe the redesigned open dialog and the open_view setting ([c9096a8](https://github.com/raluvy95/mpf/commit/c9096a83f7e6b5dabe1a92a86d75d5a025d79893))
+* design a client/daemon split so quitting the TUI is instant ([458e35a](https://github.com/raluvy95/mpf/commit/458e35ada27794ce16455df99bea78f828a4bac5))
+* keep the daemon a lightweight layer between mpv and the clients ([4baf2fd](https://github.com/raluvy95/mpf/commit/4baf2fdfdaa9060415bb6d0a4fd02337d855c897))
+* require a commit for every change and undo via git ([98cb7ff](https://github.com/raluvy95/mpf/commit/98cb7ff1851021e08822db22aff7d3b879106177))
+
 ## [1.2.0](https://github.com/raluvy95/mpf/compare/v1.1.0...v1.2.0) (2026-11-13)
 
 
