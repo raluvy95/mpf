@@ -113,6 +113,24 @@ class TestPlaylistRefresh(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(player.queue.current_idx, 2)
         self.assertEqual(player._selected_list_idx, 2)
 
+    async def test_force_refetches_a_fresh_cache_and_replaces_it(self):
+        old = [Track("a", "A"), Track("b", "B")]
+        fresh = [Track("a", "A"), Track("b", "B"), Track("c", "C")]
+        for force, fetched in ((False, 0), (True, 1)):
+            player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+            self.addCleanup(player.previewer.close)
+            with (
+                patch("mpf_core.player.load_cached_playlist", return_value=old),
+                patch("mpf_core.player.load_playback_state", return_value=None),
+                patch("mpf_core.player.is_playlist_cache_stale", return_value=False),
+                patch("mpf_core.player.fetch_playlist", return_value=Playlist("T", fresh)) as fetch,
+                patch("mpf_core.player.save_cached_playlist", return_value=True) as save,
+                patch("mpf_core.player.save_default_playlist", return_value=True),
+            ):
+                await player.load_playlist(PLAYLIST_URL, force=force)
+            self.assertEqual((fetch.call_count, save.call_count), (fetched, fetched))
+            self.assertEqual(len(player.queue.tracks), 3 if force else 2)
+
     async def test_refresh_outage_keeps_cached_queue(self):
         old = [Track("a", "A"), Track("b", "B")]
         player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)

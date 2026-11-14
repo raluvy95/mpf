@@ -48,6 +48,11 @@ def parse_cli_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Disable Kitty thumbnail previews for this session",
     )
+    parser.add_argument(
+        "--force-cache",
+        action="store_true",
+        help="Fetch the playlist from YouTube again and replace its cached copy, even if the cache is fresh",
+    )
     parser.add_argument("--daemon", action="store_true", help=argparse.SUPPRESS)  # internal: the background player
     parser.add_argument("--adopt-ipc", metavar="SOCKET", help=argparse.SUPPRESS)  # internal: take over a playing mpv
     vim_group = parser.add_mutually_exclusive_group()
@@ -111,7 +116,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         # A background player left by an earlier session is taken over, so two never play at once. When it is
         # playing what was asked for, its mpv is adopted and the music carries on; otherwise it is stopped.
         try:
-            if playlist_url == default_playlist and not cli_args.no_auto_play:
+            if playlist_url == default_playlist and not cli_args.no_auto_play and not cli_args.force_cache:
                 adopt_ipc = daemon.handover()
             if adopt_ipc is None:
                 daemon.stop()
@@ -128,6 +133,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         vim_mode=cli_args.vim,
         headless=cli_args.daemon,
         adopt_ipc=cli_args.adopt_ipc if cli_args.daemon else adopt_ipc,
+        force_refresh=cli_args.force_cache,
     )
     try:
         asyncio.run(player.run())

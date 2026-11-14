@@ -149,7 +149,9 @@ class BlessedMusicPlayer:
         vim_mode: Optional[bool] = None,
         headless: bool = False,
         adopt_ipc: Optional[str] = None,
+        force_refresh: bool = False,
     ) -> None:
+        self._force_refresh = force_refresh  # fetch the first playlist again however fresh its cache is
         self.headless = headless  # background player: no terminal, visualizer or thumbnails
         self.detach_on_exit = False  # set by run() when the caller should keep playing in the background
         self.handed_off = False  # the background player took over this player's mpv, which is still playing
@@ -364,7 +366,9 @@ class BlessedMusicPlayer:
             self.spectrum.start()
         await self.mpris.start()
         if self.playlist_url:
-            self._playlist_task = asyncio.create_task(self.load_playlist(self.playlist_url))
+            self._playlist_task = asyncio.create_task(
+                self.load_playlist(self.playlist_url, force=self._force_refresh)
+            )
         else:
             self._status_msg = "Load a YouTube playlist or video with [o]URL."
 
@@ -465,8 +469,11 @@ class BlessedMusicPlayer:
         if state:
             save_playback_state(state)
 
-    async def load_playlist(self, url: str) -> None:
-        """Load playlist from cache first, then fetch updates via yt_dlp (once per week)."""
+    async def load_playlist(self, url: str, force: bool = False) -> None:
+        """Load playlist from cache first, then fetch updates via yt_dlp (once per week).
+
+        ``force`` fetches it again however fresh the cache is, replacing the cached copy on success.
+        """
         loop = asyncio.get_running_loop()
         try:
             url = validate_media_url(url)
@@ -505,7 +512,7 @@ class BlessedMusicPlayer:
                 self._resume_index(target_idx, start_pos)
 
         # 2. Fetch fresh tracks only when cache is missing or older than 7 days
-        if not is_playlist_cache_stale(url):
+        if not force and not is_playlist_cache_stale(url):
             # Cache is fresh — nothing to do
             if cached:
                 return

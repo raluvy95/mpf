@@ -628,6 +628,10 @@ class TestCLIArgs(unittest.TestCase):
         self.assertTrue(args.no_visualizer)
         self.assertFalse(args.vim)
 
+    def test_force_cache_is_off_by_default(self):
+        self.assertFalse(parse_cli_args([]).force_cache)
+        self.assertTrue(parse_cli_args(["--force-cache"]).force_cache)
+
 
 class TestConfiguration(unittest.TestCase):
     def test_saves_loaded_default_playlist(self):

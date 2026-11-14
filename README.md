@@ -82,10 +82,13 @@ Set `MPF_VERSION`, `PYTHON_BIN`, or `OUTPUT` to override the build defaults.
 
 ```text
 mpf.py [--no-auto-play] [--config PATH] [--no-visualizer] [--no-preview]
-       [--vim | --no-vim] [--version] [url]
+       [--force-cache] [--vim | --no-vim] [--version] [url]
 ```
 
 Run `mpf.py --help` for the full option list.
+
+A playlist is cached and re-synced after a week. `--force-cache` fetches it from YouTube again right away and
+replaces the cached copy: the cached tracks play meanwhile, and if YouTube cannot be reached they stay.
 
 ## ⚙️ Configuration and data
 
