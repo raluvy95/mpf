@@ -83,11 +83,6 @@ class TestTrackModel(unittest.TestCase):
         t = Track(id="dQw4w9WgXcQ", title="Never Gonna Give You Up")
         self.assertEqual(t.thumbnail, "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")
 
-    def test_url_override(self):
-        """Non-YouTube sources can still pass a custom URL via _url."""
-        t = Track(id="local", title="Local File", _url="file:///music/song.mp3")
-        self.assertEqual(t.url, "file:///music/song.mp3")
-
     def test_cache_tuple_roundtrip(self):
         t = Track(id="abc", title="Test", duration=120.9, uploader="Artist")
         tup = t.to_cache_tuple()
@@ -97,15 +92,6 @@ class TestTrackModel(unittest.TestCase):
         self.assertEqual(restored.title, t.title)
         self.assertEqual(restored.duration, 120.0)
         self.assertEqual(restored.uploader, t.uploader)
-        self.assertEqual(restored.thumbnail, t.thumbnail)
-
-    def test_legacy_dict_roundtrip(self):
-        """to_dict/from_dict reconstruct same computed URL and thumbnail."""
-        t = Track(id="abc", title="Test", duration=120, uploader="Artist")
-        data = t.to_dict()
-        restored = Track.from_dict(data)
-        self.assertEqual(restored.id, t.id)
-        self.assertEqual(restored.title, t.title)
         self.assertEqual(restored.thumbnail, t.thumbnail)
 
 

@@ -6,14 +6,13 @@ import enum
 import math
 import random
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from mpf_core.fuzzy import fuzzy_filter_tracks
 from mpf_core.metadata import ID_LIMIT, NAME_LIMIT, TITLE_LIMIT, clean_text
 
 # ── URL/thumbnail helpers ────────────────────────────────────────────────────
 
-_YT_WATCH_PREFIX = "https://www.youtube.com/watch?v="
 _YT_SHORT_PREFIX = "https://youtu.be/"
 _YTIMG_HQ_TEMPLATE = "https://i.ytimg.com/vi/{id}/hqdefault.jpg"
 
@@ -51,20 +50,12 @@ class Track:
     ``url`` and ``thumbnail`` are computed from the video ``id`` on access so
     that cache entries never need to repeat the static URL domain prefixes or
     thumbnail query-string parameters.
-
-    For tracks whose video URL genuinely differs from the standard YouTube
-    watch URL (e.g. a local file or a non-YouTube source) you can still pass
-    an explicit ``_url`` override at construction time.  Cache serialization
-    ignores ``_url`` – it is not persisted.
     """
 
     id: str
     title: str
     duration: Optional[float] = None
     uploader: str = ""
-    # Private override – set only when the real URL is NOT a standard YT watch URL.
-    # Not serialised to the compact cache format.
-    _url: str = ""
 
     # ------------------------------------------------------------------
     # Computed properties
@@ -72,8 +63,8 @@ class Track:
 
     @property
     def url(self) -> str:
-        """Full video URL, reconstructed from *id* unless overridden."""
-        return self._url if self._url else _make_url(self.id)
+        """Full video URL, reconstructed from *id*; nothing else may decide what mpv opens."""
+        return _make_url(self.id)
 
     @property
     def thumbnail(self) -> str:
@@ -112,38 +103,6 @@ class Track:
             title=clean_text(title, TITLE_LIMIT),
             duration=float(dur) if dur is not None else None,
             uploader=clean_text(uploader, NAME_LIMIT),
-        )
-
-    # ------------------------------------------------------------------
-    # Legacy / full dict serialisation (kept for backward compat)
-    # ------------------------------------------------------------------
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialise to a full dict (matches the pre-refactor JSON schema)."""
-        return {
-            "id": self.id,
-            "title": self.title,
-            "url": self.url,
-            "duration": self.duration,
-            "uploader": self.uploader,
-            "thumbnail": self.thumbnail,
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Track":
-        """Reconstruct from a full dict (handles legacy JSON cache entries)."""
-        raw_url = data.get("url", "")
-        # Strip the standard watch URL prefix – the id is enough.
-        if raw_url.startswith(_YT_WATCH_PREFIX):
-            raw_url = ""
-        elif raw_url.startswith(_YT_SHORT_PREFIX):
-            raw_url = ""
-        return cls(
-            id=data.get("id", ""),
-            title=data.get("title", ""),
-            duration=data.get("duration"),
-            uploader=data.get("uploader", ""),
-            _url=raw_url,
         )
 
 
