@@ -101,12 +101,12 @@ class TestPlaylistRefresh(unittest.IsolatedAsyncioTestCase):
         player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(player.previewer.close)
         with (
-            patch("mpf_core.player.load_cached_playlist", return_value=old),
-            patch("mpf_core.player.load_playback_state", return_value=saved),
-            patch("mpf_core.player.is_playlist_cache_stale", return_value=True),
-            patch("mpf_core.player.fetch_playlist", return_value=Playlist("", fresh)),
-            patch("mpf_core.player.save_cached_playlist", return_value=True),
-            patch("mpf_core.player.save_default_playlist", return_value=True),
+            patch("mpf_core.engine.load_cached_playlist", return_value=old),
+            patch("mpf_core.engine.load_playback_state", return_value=saved),
+            patch("mpf_core.engine.is_playlist_cache_stale", return_value=True),
+            patch("mpf_core.engine.fetch_playlist", return_value=Playlist("", fresh)),
+            patch("mpf_core.engine.save_cached_playlist", return_value=True),
+            patch("mpf_core.engine.save_default_playlist", return_value=True),
         ):
             await player.load_playlist(PLAYLIST_URL)
         self.assertEqual(player.queue.current_track.id, "b")
@@ -120,12 +120,12 @@ class TestPlaylistRefresh(unittest.IsolatedAsyncioTestCase):
             player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
             self.addCleanup(player.previewer.close)
             with (
-                patch("mpf_core.player.load_cached_playlist", return_value=old),
-                patch("mpf_core.player.load_playback_state", return_value=None),
-                patch("mpf_core.player.is_playlist_cache_stale", return_value=False),
-                patch("mpf_core.player.fetch_playlist", return_value=Playlist("T", fresh)) as fetch,
-                patch("mpf_core.player.save_cached_playlist", return_value=True) as save,
-                patch("mpf_core.player.save_default_playlist", return_value=True),
+                patch("mpf_core.engine.load_cached_playlist", return_value=old),
+                patch("mpf_core.engine.load_playback_state", return_value=None),
+                patch("mpf_core.engine.is_playlist_cache_stale", return_value=False),
+                patch("mpf_core.engine.fetch_playlist", return_value=Playlist("T", fresh)) as fetch,
+                patch("mpf_core.engine.save_cached_playlist", return_value=True) as save,
+                patch("mpf_core.engine.save_default_playlist", return_value=True),
             ):
                 await player.load_playlist(PLAYLIST_URL, force=force)
             self.assertEqual((fetch.call_count, save.call_count), (fetched, fetched))
@@ -136,11 +136,11 @@ class TestPlaylistRefresh(unittest.IsolatedAsyncioTestCase):
         player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(player.previewer.close)
         with (
-            patch("mpf_core.player.load_cached_playlist", return_value=old),
-            patch("mpf_core.player.load_playback_state", return_value=None),
-            patch("mpf_core.player.is_playlist_cache_stale", return_value=True),
-            patch("mpf_core.player.fetch_playlist", side_effect=PlaylistFetchError("network down")),
-            patch("mpf_core.player.save_default_playlist", return_value=True),
+            patch("mpf_core.engine.load_cached_playlist", return_value=old),
+            patch("mpf_core.engine.load_playback_state", return_value=None),
+            patch("mpf_core.engine.is_playlist_cache_stale", return_value=True),
+            patch("mpf_core.engine.fetch_playlist", side_effect=PlaylistFetchError("network down")),
+            patch("mpf_core.engine.save_default_playlist", return_value=True),
         ):
             await player.load_playlist(PLAYLIST_URL)
         self.assertEqual([track.id for track in player.queue.tracks], ["a", "b"])
@@ -150,10 +150,10 @@ class TestPlaylistRefresh(unittest.IsolatedAsyncioTestCase):
         player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(player.previewer.close)
         with (
-            patch("mpf_core.player.load_cached_playlist", return_value=None),
-            patch("mpf_core.player.is_playlist_cache_stale", return_value=True),
-            patch("mpf_core.player.fetch_playlist", side_effect=PlaylistFetchError("network down")),
-            patch("mpf_core.player.save_default_playlist", return_value=True) as save_default,
+            patch("mpf_core.engine.load_cached_playlist", return_value=None),
+            patch("mpf_core.engine.is_playlist_cache_stale", return_value=True),
+            patch("mpf_core.engine.fetch_playlist", side_effect=PlaylistFetchError("network down")),
+            patch("mpf_core.engine.save_default_playlist", return_value=True) as save_default,
         ):
             await player.load_playlist(PLAYLIST_URL)
         save_default.assert_not_called()
@@ -356,7 +356,7 @@ class TestPowerInhibition(unittest.TestCase):
 
 class TestMockedPlayerLifecycle(unittest.IsolatedAsyncioTestCase):
     async def test_run_shuts_down_mpv_and_optional_processes(self):
-        with patch("mpf_core.player.MPV") as mock_mpv:
+        with patch("mpf_core.engine.MPV") as mock_mpv:
             player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
             player.previewer.close()
             player.term = MagicMock()
@@ -434,7 +434,7 @@ class TestRenderOptimization(unittest.TestCase):
 
 class TestPlaybackStatePersistence(unittest.IsolatedAsyncioTestCase):
     def _player(self):
-        with patch("mpf_core.player.MPV"):
+        with patch("mpf_core.engine.MPV"):
             player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(player.previewer.close)
         player.queue = TrackQueue([Track("a", "Song A"), Track("b", "Song B")])
@@ -460,7 +460,7 @@ class TestPlaybackStatePersistence(unittest.IsolatedAsyncioTestCase):
             saved.append((state, threading.get_ident()))
             return True
 
-        with patch("mpf_core.player.save_playback_state", side_effect=fake_save):
+        with patch("mpf_core.engine.save_playback_state", side_effect=fake_save):
             task = asyncio.create_task(player._mpv_poll_loop())
             await asyncio.sleep(0.05)
             player._running = False
@@ -484,7 +484,7 @@ class TestPlaybackStatePersistence(unittest.IsolatedAsyncioTestCase):
             finished.append(True)
             return True
 
-        with patch("mpf_core.player.save_playback_state", side_effect=slow_save):
+        with patch("mpf_core.engine.save_playback_state", side_effect=slow_save):
             task = asyncio.create_task(player._mpv_poll_loop())
             await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
             task.cancel()
@@ -499,7 +499,7 @@ class TestPlaybackStatePersistence(unittest.IsolatedAsyncioTestCase):
 
 class TestIdleAndBufferingState(unittest.IsolatedAsyncioTestCase):
     async def _poll_once(self, **mpv_props):
-        with patch("mpf_core.player.MPV"):
+        with patch("mpf_core.engine.MPV"):
             player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(player.previewer.close)
         player.queue = TrackQueue([Track("a", "Song A")])
@@ -507,7 +507,7 @@ class TestIdleAndBufferingState(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(player._mpv_poll_loop())
         await asyncio.sleep(0.05)
         player._running = False
-        with patch("mpf_core.player.save_playback_state"):
+        with patch("mpf_core.engine.save_playback_state"):
             await task
         return player
 
@@ -524,7 +524,7 @@ class TestIdleAndBufferingState(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(player._is_buffering)
 
     async def test_visualizer_stays_paused_while_nothing_is_loaded(self):
-        with patch("mpf_core.player.MPV"):
+        with patch("mpf_core.engine.MPV"):
             player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(player.previewer.close)
         player.queue = TrackQueue([Track("a", "Song A")])
@@ -536,13 +536,13 @@ class TestIdleAndBufferingState(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(player._mpv_poll_loop())
         await asyncio.sleep(0.05)
         player._running = False
-        with patch("mpf_core.player.save_playback_state"):
+        with patch("mpf_core.engine.save_playback_state"):
             await task
 
         player.spectrum.resume.assert_not_called()
 
     def test_playing_a_track_clears_idle_state(self):
-        with patch("mpf_core.player.MPV"):
+        with patch("mpf_core.engine.MPV"):
             player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(player.previewer.close)
         player.queue = TrackQueue([Track("a", "Song A")])
@@ -566,7 +566,7 @@ def _mouse(name, x, y):
 
 class TestVisualizerOnPause(unittest.IsolatedAsyncioTestCase):
     async def _mode_after_poll(self, paused, **mpv_props):
-        with patch("mpf_core.player.MPV"):
+        with patch("mpf_core.engine.MPV"):
             player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(player.previewer.close)
         player.queue = TrackQueue([Track("a", "Song A")])
@@ -577,7 +577,7 @@ class TestVisualizerOnPause(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(player._mpv_poll_loop())
         await asyncio.sleep(0.05)
         player._running = False
-        with patch("mpf_core.player.save_playback_state"):
+        with patch("mpf_core.engine.save_playback_state"):
             await task
         return player.spectrum
 
@@ -599,7 +599,7 @@ class TestVisualizerOnPause(unittest.IsolatedAsyncioTestCase):
         spectrum.resume.assert_called_once()
 
     def test_frozen_waterfall_holds_its_rows_and_cleared_one_goes_blank(self):
-        with patch("mpf_core.player.MPV"):
+        with patch("mpf_core.engine.MPV"):
             player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(player.previewer.close)
         player._spectrum_style = "waterfall"
@@ -624,7 +624,7 @@ class TestVisualizerOnPause(unittest.IsolatedAsyncioTestCase):
 
 class TestMouseControls(unittest.TestCase):
     def setUp(self):
-        with patch("mpf_core.player.MPV"):
+        with patch("mpf_core.engine.MPV"):
             self.player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(self.player.previewer.close)
         self.player.queue = TrackQueue([Track("a", "A"), Track("b", "B"), Track("c", "C")])
@@ -700,7 +700,7 @@ class TestMouseControls(unittest.TestCase):
 
 class TestRenderProtection(unittest.TestCase):
     def setUp(self):
-        with patch("mpf_core.player.MPV"):
+        with patch("mpf_core.engine.MPV"):
             self.player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(self.player.previewer.close)
         self.player.queue = TrackQueue([Track("a", "A"), Track("b", "B"), Track("c", "C")])
@@ -761,7 +761,7 @@ class TestRenderProtection(unittest.TestCase):
 
 class TestRenderOutput(unittest.TestCase):
     def _player(self):
-        with patch("mpf_core.player.MPV"):
+        with patch("mpf_core.engine.MPV"):
             player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(player.previewer.close)
         player.queue = TrackQueue([Track("a", "A"), Track("b", "B")])
@@ -1016,7 +1016,7 @@ class TestSearchIsolation(unittest.TestCase):
     DOWN = type("Key", (), {"name": "KEY_DOWN", "is_sequence": True})()
 
     def setUp(self):
-        with patch("mpf_core.player.MPV"):
+        with patch("mpf_core.engine.MPV"):
             self.player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(self.player.previewer.close)
         tracks = [Track(str(i), f"Song {i:02d}") for i in range(30)]
@@ -1139,7 +1139,7 @@ def _reference_spectrum_lines(player, style, bands, height, width, history):
 
 class TestSpectrumRenderEquivalence(unittest.TestCase):
     def setUp(self):
-        with patch("mpf_core.player.MPV"):
+        with patch("mpf_core.engine.MPV"):
             self.player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(self.player.previewer.close)
         self.player.spectrum = MagicMock(enabled=True)
@@ -1207,7 +1207,7 @@ class TestPerformanceGuards(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr or "yt_dlp was imported at startup")
 
     def _player_and_term(self, track_count=2000):
-        with patch("mpf_core.player.MPV"):
+        with patch("mpf_core.engine.MPV"):
             player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(player.previewer.close)
         player.previewer = MagicMock()

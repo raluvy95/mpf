@@ -754,9 +754,9 @@ class TestReleaseMetadata(unittest.TestCase):
 
 class TestPlayerInitialization(unittest.TestCase):
     def test_appimage_mpv_launch_restores_host_library_path(self):
-        from mpf_core.player import _mpv_environment
+        from mpf_core.engine import _mpv_environment
 
-        with patch("mpf_core.player.sys.frozen", True, create=True), patch.dict(
+        with patch("mpf_core.engine.sys.frozen", True, create=True), patch.dict(
             os.environ,
             {
                 "LD_LIBRARY_PATH": "/tmp/.mount_mpf/usr/bin/_internal",
@@ -771,7 +771,7 @@ class TestPlayerInitialization(unittest.TestCase):
                 os.environ["LD_LIBRARY_PATH"], "/tmp/.mount_mpf/usr/bin/_internal"
             )
 
-    @patch("mpf_core.player.MPV")
+    @patch("mpf_core.engine.MPV")
     def test_mpv_inhibits_screensaver_only_during_playback(self, mock_mpv):
         from mpf_core.player import MediaPlayerFluere
         player = MediaPlayerFluere()
@@ -1737,7 +1737,7 @@ class TestLogging(unittest.TestCase):
 
 class TestHardening(unittest.TestCase):
     def test_ipc_socket_uses_the_private_runtime_dir(self):
-        from mpf_core.player import _private_ipc_socket
+        from mpf_core.engine import _private_ipc_socket
 
         with tempfile.TemporaryDirectory() as runtime:
             os.chmod(runtime, 0o700)
@@ -1750,7 +1750,7 @@ class TestHardening(unittest.TestCase):
     def test_ipc_socket_falls_back_to_a_fresh_private_directory(self):
         import shutil
 
-        from mpf_core.player import _private_ipc_socket
+        from mpf_core.engine import _private_ipc_socket
 
         with tempfile.TemporaryDirectory() as shared:
             os.chmod(shared, 0o755)  # group/world accessible: not acceptable
@@ -1765,7 +1765,7 @@ class TestHardening(unittest.TestCase):
                     self.assertEqual(os.stat(cleanup).st_mode & 0o777, 0o700)
 
     def test_ipc_socket_names_are_unpredictable(self):
-        from mpf_core.player import _private_ipc_socket
+        from mpf_core.engine import _private_ipc_socket
 
         with tempfile.TemporaryDirectory() as runtime:
             os.chmod(runtime, 0o700)

@@ -4,8 +4,9 @@ import unittest
 from unittest.mock import MagicMock
 
 from mpf_core.buffering import AdaptiveReadahead
+from mpf_core.engine import PREFETCH_LEAD_SECONDS
 from mpf_core.models import RepeatMode, Track, TrackQueue
-from mpf_core.player import PREFETCH_LEAD_SECONDS, MediaPlayerFluere
+from mpf_core.player import MediaPlayerFluere
 
 LEVELS = (10, 20, 45, 90)
 

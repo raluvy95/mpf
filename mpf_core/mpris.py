@@ -16,7 +16,7 @@ from dbus_fast.service import ServiceInterface, dbus_property, method, signal
 from mpf_core.metadata import parse_track
 
 if TYPE_CHECKING:
-    from mpf_core.player import MediaPlayerFluere
+    from mpf_core.engine import PlaybackEngine
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ def _track_path(track_id: str) -> str:
 
 
 class _Root(ServiceInterface):
-    def __init__(self, player: "MediaPlayerFluere") -> None:
+    def __init__(self, player: "PlaybackEngine") -> None:
         super().__init__("org.mpris.MediaPlayer2")
         self._player = player
 
@@ -70,7 +70,7 @@ class _Root(ServiceInterface):
 
 
 class _Player(ServiceInterface):
-    def __init__(self, player: "MediaPlayerFluere") -> None:
+    def __init__(self, player: "PlaybackEngine") -> None:
         super().__init__("org.mpris.MediaPlayer2.Player")
         self._p = player
 
@@ -89,7 +89,7 @@ class _Player(ServiceInterface):
 
     @method()
     def PlayPause(self) -> None:
-        self._p.set_paused(not self._p._is_paused)
+        self._p.set_paused(not self._p.is_paused)
 
     @method()
     def Stop(self) -> None:
@@ -148,7 +148,7 @@ class _Player(ServiceInterface):
 
     @dbus_property()
     def Volume(self) -> "d":
-        return self._p._volume / 100
+        return self._p.volume / 100
 
     @Volume.setter
     def Volume(self, value: "d") -> None:
@@ -156,7 +156,7 @@ class _Player(ServiceInterface):
 
     @dbus_property(access=PropertyAccess.READ)
     def Position(self) -> "x":
-        return int(self._p._time_pos * _US)
+        return int(self._p.position * _US)
 
     @dbus_property(access=PropertyAccess.READ)
     def MinimumRate(self) -> "d":
@@ -216,7 +216,7 @@ def build_metadata(track: Any, duration: float, art_path: str = "") -> Dict[str,
 class MprisService:
     """Owns the session-bus connection and publishes player state changes."""
 
-    def __init__(self, player: "MediaPlayerFluere") -> None:
+    def __init__(self, player: "PlaybackEngine") -> None:
         self._player = player
         self._bus: Optional[MessageBus] = None
         self._iface: Optional[_Player] = None

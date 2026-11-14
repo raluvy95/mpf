@@ -183,7 +183,7 @@ class TestSpawn(unittest.TestCase):
 
 class TestHeadlessRun(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
     async def test_quit_command_stops_a_headless_player_without_touching_the_terminal(self):
-        with patch("mpf_core.player.MPV") as mock_mpv:
+        with patch("mpf_core.engine.MPV") as mock_mpv:
             player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False, headless=True)
             player.previewer.close()
             player.term = MagicMock()
@@ -210,7 +210,7 @@ class TestHeadlessRun(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
 
     async def test_interactive_run_requests_a_handoff_only_when_it_should(self):
         for paused, expected in ((False, True), (True, False)):
-            with self.subTest(paused=paused), patch("mpf_core.player.MPV"):
+            with self.subTest(paused=paused), patch("mpf_core.engine.MPV"):
                 player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
                 player.previewer.close()
                 player.term = MagicMock()
@@ -360,7 +360,7 @@ class TestCli(unittest.TestCase):
 
 class TestHandoverCommand(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
     async def test_handover_returns_the_socket_and_stops_the_headless_player_without_killing_mpv(self):
-        with patch("mpf_core.player.MPV") as mock_mpv:
+        with patch("mpf_core.engine.MPV") as mock_mpv:
             player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False, headless=True)
             player.previewer.close()
             player.term = MagicMock()
@@ -387,7 +387,7 @@ class TestHandoverCommand(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(daemon.is_running())
 
     async def test_handover_is_refused_when_there_is_no_mpv(self):
-        with patch("mpf_core.player.MPV", side_effect=RuntimeError("no mpv")):
+        with patch("mpf_core.engine.MPV", side_effect=RuntimeError("no mpv")):
             player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False, headless=True)
             player.previewer.close()
             player.term = MagicMock()
@@ -442,7 +442,7 @@ class TestHandoff(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
         return player
 
     async def test_successful_handoff_leaves_mpv_running(self):
-        with patch("mpf_core.player.MPV") as mock_mpv, patch("mpf_core.daemon.spawn", return_value=True) as spawn, patch(
+        with patch("mpf_core.engine.MPV") as mock_mpv, patch("mpf_core.daemon.spawn", return_value=True) as spawn, patch(
             "mpf_core.daemon.is_running", return_value=True
         ):
             player = self._tui()
@@ -452,7 +452,7 @@ class TestHandoff(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(mock_mpv.return_value.mpv_process)  # terminate() no longer owns a process to kill
 
     async def test_failed_handoff_stops_mpv_as_before(self):
-        with patch("mpf_core.player.MPV") as mock_mpv, patch("mpf_core.daemon.spawn", return_value=False):
+        with patch("mpf_core.engine.MPV") as mock_mpv, patch("mpf_core.daemon.spawn", return_value=False):
             player = self._tui()
             await player.run()
         self.assertTrue(player.detach_on_exit)
@@ -462,8 +462,8 @@ class TestHandoff(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
 
     async def test_a_daemon_that_never_answers_is_not_left_to_start_late(self):
         with (
-            patch("mpf_core.player.MPV"),
-            patch("mpf_core.player.HANDOFF_TIMEOUT_SECONDS", 0.2),
+            patch("mpf_core.engine.MPV"),
+            patch("mpf_core.engine.HANDOFF_TIMEOUT_SECONDS", 0.2),
             patch("mpf_core.daemon.spawn", return_value=True),
             patch("mpf_core.daemon.is_running", return_value=False),
             patch("mpf_core.daemon.stop") as stop,
@@ -507,7 +507,7 @@ class TestHandoff(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
     def test_adopting_a_missing_socket_falls_back_to_a_fresh_mpv(self):
         player = self._daemon_player()
         player.mpv = None
-        with patch("mpf_core.player.MPV") as mock_mpv:
+        with patch("mpf_core.engine.MPV") as mock_mpv:
             player._adopt_running_mpv(os.path.join(self._tmp, "gone.sock"))
         self.assertIsNone(player.mpv)
         self.assertFalse(player._adopting)

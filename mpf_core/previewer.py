@@ -29,6 +29,12 @@ KITTY_RENDER_TIMEOUT_SECONDS = 5.0
 logger = logging.getLogger(__name__)
 
 
+def thumbnail_path(track: Track, thumbs_dir: str = THUMBS_CACHE_DIR) -> str:
+    """Where a track's thumbnail is cached; the id is reduced to a safe file name."""
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", track.id)[:128] or "thumbnail"
+    return os.path.join(thumbs_dir, f"{safe_id}.jpg")
+
+
 class KittyPreviewer:
     """Renders real pixel images using Kitty icat graphics protocol."""
 
@@ -53,8 +59,7 @@ class KittyPreviewer:
         self.expire_cache()
 
     def _thumbnail_path(self, track: Track) -> str:
-        safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", track.id)[:128] or "thumbnail"
-        return os.path.join(self.thumbs_dir, f"{safe_id}.jpg")
+        return thumbnail_path(track, self.thumbs_dir)
 
     def get_cached_image_path(self, track: Optional[Track], fallback: bool = True) -> str:
         """Return an existing thumbnail without performing network I/O.
