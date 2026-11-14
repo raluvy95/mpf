@@ -603,6 +603,14 @@ class TestPlaylistFetcher(unittest.TestCase):
         ):
             self.assertNotIn("LD_LIBRARY_PATH", _host_environment())
 
+    def test_a_url_in_the_extractor_output_never_decides_what_mpv_plays(self):
+        info = {"entries": [{"id": "abc", "title": "T", "url": "http://169.254.169.254/latest/meta-data"}]}
+        with patch("mpf_core.fetcher.shutil.which", return_value=None), patch(
+            "mpf_core.fetcher._extract_info_with_module", return_value=info
+        ):
+            (track,) = fetch_playlist_tracks("https://www.youtube.com/playlist?list=x")
+        self.assertEqual(track.url, "https://youtu.be/abc")
+
 
 class TestCLIArgs(unittest.TestCase):
     def test_default_args(self):

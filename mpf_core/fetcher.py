@@ -11,7 +11,7 @@ import sys
 from typing import Any, Dict, List, NamedTuple, Optional
 from urllib.parse import parse_qs, urlparse
 
-from mpf_core.metadata import ID_LIMIT, NAME_LIMIT, TITLE_LIMIT, URL_LIMIT, clean_text, redact_urls
+from mpf_core.metadata import ID_LIMIT, NAME_LIMIT, TITLE_LIMIT, clean_text, redact_urls
 from mpf_core.models import Track
 
 logger = logging.getLogger(__name__)
@@ -180,12 +180,6 @@ def fetch_playlist(url: str, ydl_opts: Optional[Dict[str, Any]] = None) -> Playl
             skipped += 1
             continue
 
-        # Preserve an extractor-provided URL only for a non-YouTube entry.
-        entry_url = clean_text(entry.get("url"), URL_LIMIT)
-        url_override = ""
-        if entry_url.startswith("http") and "youtube.com" not in entry_url and "youtu.be" not in entry_url:
-            url_override = entry_url
-
         duration = entry.get("duration")
         uploader = clean_text(entry.get("uploader") or entry.get("channel"), NAME_LIMIT)
 
@@ -195,7 +189,6 @@ def fetch_playlist(url: str, ydl_opts: Optional[Dict[str, Any]] = None) -> Playl
                 title=raw_title,
                 duration=float(duration) if duration is not None else None,
                 uploader=uploader,
-                _url=url_override,
             )
         )
     if skipped:
