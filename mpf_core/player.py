@@ -1172,13 +1172,31 @@ class BlessedMusicPlayer:
             (term.bold_yellow, text[local + 1 :] + suffix),
         ]
 
+    TILE_WIDTH = 22  # a thumbnail tile: the image is this many cells wide...
+    TILE_IMAGE_ROWS = 6  # ...and this many tall (about 16:9), with the name on the row below and a blank one after
+    TILE_GAP = 2
+
+    def _open_grid(self) -> Optional[Tuple[int, int]]:
+        """(columns, visible rows) of the thumbnail grid, or None when the list view is used.
+
+        The list is the fallback whenever thumbnails cannot be drawn (no Kitty, preview turned off) or
+        the terminal is too small to show at least two columns and two rows of tiles.
+        """
+        if self._open_view != "thumbnails" or not self.previewer.has_kitty or not self._show_preview:
+            return None
+        columns = min(4, (self.term.width - 3) // (self.TILE_WIDTH + self.TILE_GAP))
+        rows = (self.term.height - self.OPEN_HEADER_ROWS - 1) // (self.TILE_IMAGE_ROWS + 2)
+        return (columns, rows) if columns >= 2 and rows >= 2 else None
+
     def _open_columns(self) -> int:
         """Saved playlists per row: one for the list view."""
-        return 1
+        grid = self._open_grid()
+        return grid[0] if grid else 1
 
     def _open_visible_rows(self, height: int) -> int:
         """Saved-playlist rows that fit under the dialog header and above its hint."""
-        return max(1, height - self.OPEN_HEADER_ROWS - 1)
+        grid = self._open_grid()
+        return grid[1] if grid else max(1, height - self.OPEN_HEADER_ROWS - 1)
 
     def _move_open_selection(self, step: int) -> None:
         """Move the highlighted saved playlist by ``step`` items, stopping at either end."""
@@ -1197,8 +1215,11 @@ class BlessedMusicPlayer:
 
     OPEN_HEADER_ROWS = 6  # prompt, hint, error or blank, blank, "Saved playlists:", blank
 
-    def _open_lines(self, width: int, height: int) -> List[str]:
-        """The open dialog: the URL prompt, then the saved playlists as a list."""
+    def _open_lines(self, width: int, height: int) -> Tuple[List[str], List[Tuple[Any, int, int, int, int]]]:
+        """The open dialog: the URL prompt, then the saved playlists as a list or a grid of thumbnails.
+
+        Returns the text lines and the thumbnails to draw over them as (track, x, y, width, height).
+        """
         term = self.term
         typing = bool(self._input_text)
         hide = [(term.dim, " press ")] + self._keycap_segments("Esc" if typing else "o", "yellow") + [(term.dim, " to hide")]
@@ -1212,8 +1233,15 @@ class BlessedMusicPlayer:
         ]
         if not self._open_saved:
             lines.append(self._paint([(term.dim, " Nothing saved yet: playlists you open are kept here.")], width))
-            return lines
+            return lines, []
         visible = self._open_visible_rows(height)
+        grid = self._open_grid()
+        if grid:
+            tiles = self._open_tile_lines(width, grid[0], visible, typing)
+            lines += tiles[0]
+            lines += [""] * max(0, height - 1 - len(lines))
+            lines.append(self._paint([(term.dim, " arrows or Tab choose · Enter opens · Esc closes")], width))
+            return lines, tiles[1]
         for index in range(self._open_scroll, min(len(self._open_saved), self._open_scroll + visible)):
             item = self._open_saved[index]
             selected = index == self._open_idx and not typing  # typed text is what Enter opens
@@ -1229,7 +1257,38 @@ class BlessedMusicPlayer:
             )
         lines += [""] * max(0, height - 1 - len(lines))
         lines.append(self._paint([(term.dim, " ↑↓ choose · Enter opens · Esc closes")], width))
-        return lines
+        return lines, []
+
+    def _open_tile_lines(
+        self, width: int, columns: int, visible_rows: int, typing: bool
+    ) -> Tuple[List[str], List[Tuple[Any, int, int, int, int]]]:
+        """Grid rows: blank lines for each thumbnail to be drawn over, then the names; plus the placements."""
+        term = self.term
+        lines: List[str] = []
+        placements: List[Tuple[Any, int, int, int, int]] = []
+        pitch = self.TILE_WIDTH + self.TILE_GAP
+        first = self._open_scroll
+        for row in range(visible_rows):
+            names: List[Tuple[Any, str]] = []
+            for column in range(columns):
+                index = first + row * columns + column
+                if index >= len(self._open_saved):
+                    break
+                item = self._open_saved[index]
+                selected = index == self._open_idx and not typing
+                self.previewer.request(item.cover)
+                placements.append(
+                    (item.cover, 2 + column * pitch, self.OPEN_HEADER_ROWS + row * (self.TILE_IMAGE_ROWS + 2),
+                     self.TILE_WIDTH, self.TILE_IMAGE_ROWS)
+                )
+                name = ("➤ " if selected else "  ") + item.name
+                names.append((term.bold_yellow_reverse if selected else term.bold, name[: self.TILE_WIDTH].ljust(pitch)))
+            if not names:
+                break
+            lines += [""] * self.TILE_IMAGE_ROWS
+            lines.append(self._paint(names, width))
+            lines.append("")
+        return lines, placements
 
     def _handle_mouse(self, key: Any) -> None:
         """Handle progress-bar seeking, summary icons, track-list clicks, and wheel navigation."""
@@ -1861,13 +1920,20 @@ class BlessedMusicPlayer:
         term = self.term
         width = max(0, term.width - 3)
         output = [term.clear + term.home]
+        placements: List[Tuple[Any, int, int, int, int]] = []
         if self._input_mode == "url":
-            lines = self._open_lines(width, term.height)
+            lines, placements = self._open_lines(width, term.height)
+            # Repaint every row in place instead of clearing the screen, which could take the thumbnails
+            # with it while the previewer still believes they are drawn.
+            lines += [""] * (term.height - len(lines))
+            output = [term.home]
         else:
             lines = self._settings_lines(width) if self._show_settings else self._help_lines(width)
         for row, line in enumerate(lines[: term.height]):
             output.append(self._move(2, row) + line + term.clear_eol)
         print("".join(output), end="", flush=True)
+        if placements:
+            self.previewer.render_many(placements)
 
     @staticmethod
     def _progress_meter(width: int, progress: float) -> str:

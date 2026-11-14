@@ -1439,6 +1439,7 @@ class TestOpenDialog(unittest.TestCase):
         player = BlessedMusicPlayer(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
         self.addCleanup(player.previewer.close)
         saved = [SavedPlaylist(url, f"Mix {n}", 5, Track("t", "T"), 0.0) for n, url in enumerate(self.URLS)]
+        self._saved = saved
         patcher = patch("mpf_core.player.list_saved_playlists", return_value=saved)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -1449,6 +1450,22 @@ class TestOpenDialog(unittest.TestCase):
     @staticmethod
     def _key(name):
         return type("Key", (str,), {"name": name, "is_sequence": True})("")
+
+    @staticmethod
+    def _resize(player, width, height):
+        """Give the player a terminal of this size, otherwise the real one."""
+
+        class Sized:
+            def __init__(self, term):
+                self._term = term
+                self.width, self.height = width, height
+
+            def __getattr__(self, name):
+                return getattr(self._term, name)
+
+        if not hasattr(player, "_real_term"):
+            player._real_term = player.term
+        player.term = Sized(player._real_term)
 
     def test_o_hides_the_dialog_only_while_nothing_is_typed(self):
         player = self._player()
@@ -1494,24 +1511,77 @@ class TestOpenDialog(unittest.TestCase):
         player = self._player()
         player._handle_key("o")
         player._move_open_selection(1)
-        lines = [self._strip(line) for line in player._open_lines(80, 20)]
+        lines = [self._strip(line) for line in player._open_lines(80, 20)[0]]
         self.assertTrue(lines[0].startswith(" open: "))
         self.assertIn("press [o] to hide", lines[1])
         self.assertIn("Saved playlists:", lines[4])
         self.assertTrue(lines[6].startswith("   Mix 0 - " + self.URLS[0]))
         self.assertTrue(lines[7].startswith(" \u27a4 Mix 1 - " + self.URLS[1]))
         player._handle_key("h")
-        self.assertIn("press [Esc] to hide", self._strip(player._open_lines(80, 20)[1]))
+        self.assertIn("press [Esc] to hide", self._strip(player._open_lines(80, 20)[0][1]))
 
     def test_long_lists_scroll_to_keep_the_highlight_visible(self):
         player = self._player()
         player._handle_key("o")
         height = player.OPEN_HEADER_ROWS + 3  # two playlist rows and the hint
-        player.term = type("T", (), {"height": height})()  # only the height is read while moving
+        self._resize(player, 80, height)
         player._move_open_selection(2)
         self.assertEqual(player._open_scroll, 1)
         player._move_open_selection(-2)
         self.assertEqual(player._open_scroll, 0)
+
+    def _grid_player(self, width, height):
+        player = self._player()
+        player._open_view = "thumbnails"
+        player.previewer.has_kitty = True
+        player.previewer.request = lambda _track: None  # type: ignore[method-assign]
+        self._resize(player, width, height)
+        player._open_saved = player._open_saved or self._saved * 2  # six playlists
+        return player
+
+    def test_thumbnail_view_lays_tiles_out_in_a_grid_with_names_below(self):
+        player = self._grid_player(60, 24)
+        self.assertEqual(player._open_grid(), (2, 2))
+        player._open_idx = 1
+        lines, placements = self.__class__._open_lines_plain(player, 60, 24)
+        self.assertEqual(len(placements), 4)  # two rows of two fit
+        self.assertEqual([(x, y) for _t, x, y, _w, _h in placements], [(2, 6), (26, 6), (2, 14), (26, 14)])
+        self.assertTrue(all((w, h) == (22, 6) for _t, _x, _y, w, h in placements))
+        self.assertTrue(lines[12].startswith("  Mix 0") and "\u27a4 Mix 1" in lines[12])
+        self.assertEqual(lines[6:12], [""] * 6)  # room for the images
+
+    def test_grid_moves_by_row_with_up_and_down_and_by_one_with_tab(self):
+        player = self._grid_player(60, 24)
+        player._handle_key("o")
+        player._open_saved = player._open_saved * 2
+        player._handle_key(self._key("KEY_DOWN"))
+        self.assertEqual(player._open_idx, 2)
+        player._handle_key(self._key("KEY_TAB"))
+        self.assertEqual(player._open_idx, 3)
+        player._handle_key(self._key("KEY_UP"))
+        self.assertEqual(player._open_idx, 1)
+        player._handle_key(self._key("KEY_BTAB"))
+        self.assertEqual(player._open_idx, 0)
+
+    def test_thumbnail_view_falls_back_to_the_list_when_it_cannot_fit_or_draw(self):
+        player = self._grid_player(60, 24)
+        for width, height in ((40, 24), (60, 18)):  # one column; one row
+            self._resize(player, width, height)
+            self.assertIsNone(player._open_grid())
+        self._resize(player, 60, 24)
+        player.previewer.has_kitty = False
+        self.assertIsNone(player._open_grid())
+        player.previewer.has_kitty = True
+        player._show_preview = False
+        self.assertIsNone(player._open_grid())
+        player._show_preview = True
+        player._open_view = "list"
+        self.assertIsNone(player._open_grid())
+
+    @classmethod
+    def _open_lines_plain(cls, player, width, height):
+        lines, placements = player._open_lines(width, height)
+        return [cls._strip(line) for line in lines], placements
 
     @staticmethod
     def _strip(text):
