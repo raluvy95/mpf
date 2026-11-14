@@ -173,6 +173,7 @@ class BlessedMusicPlayer:
         self._show_help = False
         self._show_settings = False
         self._settings_msg = ""
+        self._settings_idx = 0  # highlighted row on the settings screen
         self._status_msg = "Initializing..."
 
         # UI state
@@ -1369,6 +1370,7 @@ class BlessedMusicPlayer:
             self._show_help,
             self._show_settings,
             self._settings_msg,
+            self._settings_idx,
             self._volume,
             self.queue.repeat_mode,
             self.queue.shuffle_enabled,
@@ -1397,37 +1399,50 @@ class BlessedMusicPlayer:
         self._spectrum_history.clear()
 
     def _dispatch_settings_key(self, key: Any, key_name: str) -> None:
-        """Keys on the settings screen; each row's key changes that option and saves it to the config."""
+        """Settings screen: arrows move, Enter or Space changes the row; v, a and V work as on the dashboard."""
         if key in (",", "\x1b") or key_name == "KEY_ESCAPE":
             self._show_settings = False
         elif key in ("q", "Q"):
             self._running = False
+        elif key_name in ("KEY_UP", "KEY_DOWN"):
+            step = -1 if key_name == "KEY_UP" else 1
+            self._settings_idx = (self._settings_idx + step) % len(self.SETTINGS_ROWS)
+            self._settings_msg = ""
+        elif key_name == "KEY_ENTER" or key in ("\n", "\r", " "):
+            self._change_setting(self.SETTINGS_ROWS[self._settings_idx][3])
         elif key == "v":
             self._toggle_visualizer()
         elif key in ("a", "A"):
             self._cycle_visualizer_style()
         elif key == "V":
             self._toggle_vim_mode()
-        elif key in ("d", "D"):
-            self._input_mode = "playlist"
-            self._input_buffer = load_default_playlist(self.config_file)
-            self._settings_msg = ""
-        elif key in ("b", "B"):
+
+    def _change_setting(self, action: str) -> None:
+        """Toggle or cycle a setting at once and save it, or open the prompt for a typed one."""
+        self._settings_msg = ""
+        if action == "visualizer":
+            self._toggle_visualizer()
+        elif action == "style":
+            self._cycle_visualizer_style()
+        elif action == "vim":
+            self._toggle_vim_mode()
+        elif action == "bar":
             index = BAR_POSITIONS.index(self._bar_position)
             self._bar_position = BAR_POSITIONS[(index + 1) % len(BAR_POSITIONS)]
             save_bar_position(self._bar_position, self.config_file)
             self._spectrum_history.clear()
-        elif key in ("r", "R"):
+        elif action == "rainbow":
             self._color_mode = COLOR_MODES[(COLOR_MODES.index(self._color_mode) + 1) % len(COLOR_MODES)]
             save_color_mode(self._color_mode, self.config_file)
-        elif key in ("g", "G"):
+        elif action == "rainbow_colors":
             self._input_mode = "rainbow"
             self._input_buffer = ", ".join(self._rainbow_colors)
-            self._settings_msg = ""
-        elif key in ("c", "C"):
+        elif action == "playlist":
+            self._input_mode = "playlist"
+            self._input_buffer = load_default_playlist(self.config_file)
+        elif action == "clients":
             self._input_mode = "clients"
             self._input_buffer = ", ".join(self._ytdl_fallback_clients)
-            self._settings_msg = ""
 
     def _apply_setting_input(self, mode: str, text: str) -> None:
         """Validate and save a typed setting, reporting the outcome on the settings screen."""
@@ -1493,6 +1508,18 @@ class BlessedMusicPlayer:
                 break
         return "".join(out)
 
+    # Settings rows as (section, label, dashboard key or "", action). Only keys that also work on the
+    # dashboard are shown; every other row is reached with the arrows and changed with Enter or Space.
+    SETTINGS_ROWS = (
+        ("Display", "Show visualizer", "v", "visualizer"),
+        ("Display", "Visualizer style", "a", "style"),
+        ("Display", "Bar position", "", "bar"),
+        ("Display", "Rainbow colouring", "", "rainbow"),
+        ("Display", "Rainbow colours", "", "rainbow_colors"),
+        ("General", "Vim keys", "V", "vim"),
+        ("Library", "Default playlist", "", "playlist"),
+        ("Playback", "YouTube fallback clients", "", "clients"),
+    )
     HELP_COLORS = {"Playback": "cyan", "Library": "green", "Display": "magenta", "General": "yellow"}
 
     def _help_sections(self) -> List[Tuple[str, List[Tuple[Tuple[str, ...], str, Optional[Tuple[str, str]]]]]]:
@@ -1548,35 +1575,60 @@ class BlessedMusicPlayer:
     def _on_off(value: bool) -> Tuple[str, str]:
         return ("on", "green") if value else ("off", "red")
 
-    def _settings_sections(self) -> List[Tuple[str, List[Tuple[Tuple[str, ...], str, Optional[Tuple[str, str]]]]]]:
-        """Settings content in the help's row format; every row mirrors one config.json key."""
-        playlist = load_default_playlist(self.config_file)
-        shown = playlist[:40] + "…" if len(playlist) > 40 else playlist or "none"
-        clients = ", ".join(self._ytdl_fallback_clients) or "none"
-        return [
-            (
-                "Display",
-                [
-                    (("v",), "Show visualizer", self._on_off(self._show_visualizer)),
-                    (("a",), "Visualizer style", (self._spectrum_style, "cyan")),
-                    (("b",), "Bar position", (self._bar_position, "cyan")),
-                    (("r",), "Rainbow colouring", self._on_off(self._color_mode == "rainbow")),
-                    (("g",), "Rainbow colours", (", ".join(self._rainbow_colors), "cyan")),
-                ],
-            ),
-            ("General", [(("V",), "Vim keys", self._on_off(self._vim_mode))]),
-            ("Library", [(("d",), "Default playlist", (shown, "cyan"))]),
-            ("Playback", [(("c",), "YouTube fallback clients", (clients, "cyan"))]),
-        ]
+    def _setting_value(self, action: str) -> Tuple[str, str]:
+        """Current value of a settings row and the colour to show it in."""
+        if action == "playlist":
+            playlist = load_default_playlist(self.config_file)
+            return (playlist[:40] + "…" if len(playlist) > 40 else playlist or "none"), "cyan"
+        return {
+            "visualizer": self._on_off(self._show_visualizer),
+            "style": (self._spectrum_style, "cyan"),
+            "bar": (self._bar_position, "cyan"),
+            "rainbow": self._on_off(self._color_mode == "rainbow"),
+            "rainbow_colors": (", ".join(self._rainbow_colors), "cyan"),
+            "vim": self._on_off(self._vim_mode),
+            "clients": (", ".join(self._ytdl_fallback_clients) or "none", "cyan"),
+        }[action]
 
     def _help_lines(self, width: Optional[int] = None) -> List[str]:
         """Styled help screen lines, each cut to ``width`` visible characters when given."""
         return self._screen_lines(" MPF HELP ", self._help_sections(), "?", width)
 
     def _settings_lines(self, width: Optional[int] = None) -> List[str]:
-        """Styled settings screen: the help's layout plus the prompt or the last result."""
-        lines = self._screen_lines(" MPF SETTINGS ", self._settings_sections(), ",", width)
+        """Settings screen: one row per option with a cursor on the selected one, then the prompt or last result."""
         term = self.term
+        label_width = max(len(label) for _section, label, _key, _action in self.SETTINGS_ROWS)
+        lines = [
+            self._paint(
+                [(None, " "), (term.bold_reverse, " MPF SETTINGS "), (term.dim, "  press ")]
+                + self._keycap_segments(",", None)
+                + [(term.dim, " to close")],
+                width,
+            )
+        ]
+        section = ""
+        for index, (row_section, label, key, action) in enumerate(self.SETTINGS_ROWS):
+            color = self.HELP_COLORS.get(row_section, "cyan")
+            if row_section != section:
+                section = row_section
+                dashes = "─" * max(0, 12 - len(section))
+                lines.append("")
+                lines.append(
+                    self._paint(
+                        [(None, " "), (getattr(term, f"bold_{color}"), section), (None, " "), (term.dim, dashes)], width
+                    )
+                )
+            selected = index == self._settings_idx
+            value, value_color = self._setting_value(action)
+            segments: List[Tuple[Any, str]] = [(getattr(term, f"bold_{color}"), " ›  " if selected else "    ")]
+            segments += self._keycap_segments(key, color) if key else [(None, "   ")]
+            segments += [
+                (None, "  "),
+                (term.bold if selected else None, label.ljust(label_width)),
+                (None, "  "),
+                (getattr(term, f"bold_{value_color}"), value),
+            ]
+            lines.append(self._paint(segments, width))
         lines.append("")
         if self._input_mode in ("playlist", "clients", "rainbow"):
             label = {
@@ -1586,8 +1638,10 @@ class BlessedMusicPlayer:
             }[self._input_mode]
             lines.append(self._paint(self._prompt_segments(label, width=width), width))
             lines.append(self._paint([(term.dim, " Enter saves · Esc cancels")], width))
-        elif self._settings_msg:
-            lines.append(self._paint([(term.dim, f" {self._settings_msg}")], width))
+        else:
+            if self._settings_msg:
+                lines.append(self._paint([(term.dim, f" {self._settings_msg}")], width))
+            lines.append(self._paint([(term.dim, " ↑↓ move · Enter or Space change · Esc close")], width))
         return lines
 
     def _screen_lines(

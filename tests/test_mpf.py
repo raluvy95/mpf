@@ -899,6 +899,18 @@ class TestPlayerQualityOfLife(unittest.TestCase):
         player.mpv.command.assert_called_once_with("seek", -5, "relative")
 
 
+def _key(name):
+    return type("Key", (str,), {"name": name, "is_sequence": True})("")
+
+
+def _choose_setting(player, action):
+    """Move the settings cursor to the row with this action using the arrow keys, then press Enter."""
+    target = [row[3] for row in player.SETTINGS_ROWS].index(action)
+    while player._settings_idx != target:
+        player._handle_key(_key("KEY_DOWN"))
+    player._handle_key(_key("KEY_ENTER"))
+
+
 class TestSettingsScreen(unittest.TestCase):
     def _player(self, **kwargs):
         import tempfile
@@ -929,13 +941,55 @@ class TestSettingsScreen(unittest.TestCase):
         text = "\n".join(player.term.strip_seqs(line) for line in player._settings_lines())
         for expected in (
             "MPF SETTINGS",
-            "[v]  Show visualizer (now on)",
-            "[a]  Visualizer style (now waterfall)",
-            "[V]  Vim keys (now on)",
-            "[d]  Default playlist (now none)",
-            "[c]  YouTube fallback clients (now tv_simply, mweb)",
+            "[v]  Show visualizer",
+            "[a]  Visualizer style",
+            "[V]  Vim keys",
+            "Default playlist",
+            "YouTube fallback clients",
         ):
             self.assertIn(expected, text)
+        self.assertIn("tv_simply, mweb", text)
+        self.assertIn("↑↓ move", text)
+
+    def test_only_dashboard_keys_are_shown_on_rows(self):
+        player, _config = self._player()
+        shown = {row[1]: row[2] for row in player.SETTINGS_ROWS if row[2]}
+        self.assertEqual(shown, {"Show visualizer": "v", "Visualizer style": "a", "Vim keys": "V"})
+
+    def test_arrows_move_the_cursor_and_wrap(self):
+        player, _config = self._player()
+        player._handle_key(",")
+        self.assertEqual(player._settings_idx, 0)
+        player._handle_key(_key("KEY_UP"))
+        self.assertEqual(player._settings_idx, len(player.SETTINGS_ROWS) - 1)
+        player._handle_key(_key("KEY_DOWN"))
+        self.assertEqual(player._settings_idx, 0)
+        text = "\n".join(player.term.strip_seqs(line) for line in player._settings_lines())
+        self.assertIn("›  [v]  Show visualizer", text)
+
+    def test_enter_and_space_change_the_selected_row_live(self):
+        from mpf_core.config import load_color_mode
+
+        player, config = self._player()
+        player._handle_key(",")
+        player._settings_idx = [row[3] for row in player.SETTINGS_ROWS].index("rainbow")
+        player._handle_key(_key("KEY_ENTER"))
+        self.assertEqual(player._color_mode, "rainbow")
+        self.assertEqual(load_color_mode(config), "rainbow")
+        player._handle_key(" ")
+        self.assertEqual(player._color_mode, "plain")
+        self.assertEqual(load_color_mode(config), "plain")
+        self.assertTrue(player._show_settings)
+
+    def test_removed_letter_keys_do_nothing_in_settings(self):
+        player, config = self._player()
+        player._handle_key(",")
+        for key in "bgdcr":
+            player._handle_key(key)
+        self.assertEqual(player._input_mode, "none")
+        self.assertEqual(player._bar_position, "bottom")
+        self.assertEqual(player._color_mode, "plain")
+        self.assertFalse(os.path.exists(config))
 
     def test_settings_keys_change_and_persist_options(self):
         from mpf_core.config import load_vim_mode, load_visualizer_preferences
@@ -954,11 +1008,12 @@ class TestSettingsScreen(unittest.TestCase):
 
         player, config = self._player()
         player._handle_key(",")
-        player._handle_key("d")
+        _choose_setting(player, "playlist")
+        player._input_buffer = ""
         self._type(player, "not a url")
         self.assertEqual(load_default_playlist(config), "")
         self.assertTrue(player._settings_msg)
-        player._handle_key("d")
+        _choose_setting(player, "playlist")
         player._input_buffer = ""
         self._type(player, "https://www.youtube.com/playlist?list=PLabc")
         self.assertEqual(load_default_playlist(config), "https://www.youtube.com/playlist?list=PLabc")
@@ -968,16 +1023,16 @@ class TestSettingsScreen(unittest.TestCase):
 
         player, config = self._player()
         player._handle_key(",")
-        player._handle_key("c")
+        _choose_setting(player, "clients")
         player._input_buffer = ""
         self._type(player, "web_safari, android")
         self.assertEqual(load_ytdl_fallback_clients(config), ("web_safari", "android"))
         self.assertEqual(player._ytdl_fallback_clients, ("web_safari", "android"))
-        player._handle_key("c")
+        _choose_setting(player, "clients")
         player._input_buffer = ""
         self._type(player, "bad=name")
         self.assertEqual(player._ytdl_fallback_clients, ("web_safari", "android"))
-        player._handle_key("c")
+        _choose_setting(player, "clients")
         player._input_buffer = ""
         self._type(player, "")
         self.assertEqual(load_ytdl_fallback_clients(config), ())
@@ -1037,10 +1092,10 @@ class TestNewVisualizerStyles(unittest.TestCase):
 
         player = self._player()
         player._handle_key(",")
-        player._handle_key("b")
+        _choose_setting(player, "bar")
         self.assertEqual(player._bar_position, "top")
         self.assertEqual(load_bar_position(player.config_file), "top")
-        player._handle_key("b")
+        _choose_setting(player, "bar")
         self.assertEqual(load_bar_position(player.config_file), "bottom")
 
     def test_rainbow_is_mirrored(self):
@@ -1135,10 +1190,10 @@ class TestNewVisualizerStyles(unittest.TestCase):
 
         player = self._player()
         player._handle_key(",")
-        player._handle_key("r")
+        _choose_setting(player, "rainbow")
         self.assertEqual(player._color_mode, "rainbow")
         self.assertEqual(load_color_mode(player.config_file), "rainbow")
-        player._handle_key("r")
+        _choose_setting(player, "rainbow")
         self.assertEqual(load_color_mode(player.config_file), "plain")
 
     def test_rainbow_colours_validate_save_and_load(self):
@@ -1167,7 +1222,7 @@ class TestNewVisualizerStyles(unittest.TestCase):
     def test_settings_edits_rainbow_colours(self):
         player = self._player()
         player._handle_key(",")
-        player._handle_key("g")
+        _choose_setting(player, "rainbow_colors")
         player._input_buffer = ""
         for char in "cyan, magenta\n":
             player._handle_key(char)
