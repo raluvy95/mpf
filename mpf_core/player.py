@@ -23,6 +23,7 @@ from blessed import Terminal
 from python_mpv_jsonipc import MPV
 
 from mpf_core import daemon
+from mpf_core.buffering import AdaptiveReadahead
 from mpf_core.cache import (
     PlaybackState,
     is_playlist_cache_stale,
@@ -66,6 +67,7 @@ from mpf_core.previewer import KittyPreviewer
 from mpf_core.visualizer import PipeWireSpectrumAnalyzer
 
 DEFAULT_PLAYLIST_URL = ""
+PREFETCH_LEAD_SECONDS = 20.0  # queue the next track in mpv this close to the end of the current one
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 logger = logging.getLogger(__name__)
@@ -187,6 +189,9 @@ class BlessedMusicPlayer:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._playlist_task: Optional[asyncio.Task[None]] = None
         self._failed_track_ids: set[str] = set()
+        self._readahead = AdaptiveReadahead()
+        self._was_stalled = False
+        self._prefetched_id: Optional[str] = None  # next track already appended to mpv's playlist
         self._last_render_signature: Optional[Tuple[Any, ...]] = None
         self._render_requested = asyncio.Event()
         self._mpv_poll_error_reported = False
@@ -252,7 +257,8 @@ class BlessedMusicPlayer:
                     ytdl_format="bestaudio/best",
                     cache="yes",
                     demuxer_max_bytes="25M",
-                    demuxer_readahead_secs="30",
+                    demuxer_readahead_secs=str(self._readahead.secs),
+                    prefetch_playlist="yes",
                     stop_screensaver="yes",
                     log_handler=self._on_mpv_log,
                     loglevel="error",
@@ -483,6 +489,7 @@ class BlessedMusicPlayer:
         label = f"the {client} client" if client else "yt-dlp's default client"
         logger.warning("Retrying %s with %s after: %s", track.id, label, self._mpv_errors_text())
         self._mpv_errors.clear()  # the next attempt reports its own errors
+        self._prefetched_id = None  # mpv.play() below replaces the playlist
         try:
             self._set_ytdl_client(client)
             self.mpv.play(track.url)
@@ -496,7 +503,7 @@ class BlessedMusicPlayer:
     def _mpv_errors_text(self) -> str:
         return " | ".join(self._mpv_errors) or "no error from mpv"
 
-    def _play_index(self, index: int, start_pos: float = 0.0) -> None:
+    def _play_index(self, index: int, start_pos: float = 0.0, loaded: bool = False) -> None:
         if not self.queue.tracks or not (0 <= index < len(self.queue.tracks)):
             return
         self.queue.current_idx = index
@@ -505,6 +512,7 @@ class BlessedMusicPlayer:
         self._is_buffering = True
         self._mpv_idle = False
         self._spectrum_mode = None
+        self._prefetched_id = None  # mpv.play() replaces its playlist; a loaded track already consumed it
 
         if self.mpv:
             try:
@@ -512,7 +520,8 @@ class BlessedMusicPlayer:
                 self._fallbacks_left = [None] * self._ytdl_plain_retries + list(self._ytdl_fallback_clients)
                 self._mpv_errors.clear()
                 self._set_ytdl_client(None)
-                self.mpv.play(track.url)
+                if not loaded:  # mpv already moved on to the prefetched track by itself
+                    self.mpv.play(track.url)
                 self._set_power_inhibit(True)
             except Exception as err:
                 self._pending_seek = None
@@ -737,13 +746,67 @@ class BlessedMusicPlayer:
                     break
                 nxt = (nxt + 1) % len(self.queue.tracks)
         if nxt is not None:
-            self._play_index(nxt)
+            # mpv advances to a prefetched track on its own at EOF; reloading it would throw the buffer away.
+            prefetched = reason == "eof" and self.queue.tracks[nxt].id == self._prefetched_id
+            self._play_index(nxt, loaded=prefetched)
         else:
             self._is_buffering = False
             self._is_paused = True
             self._set_power_inhibit(False)
             if reason == "eof":
                 self._status_msg = "Playlist finished."
+
+    def _tune_buffering(self, stalled: bool) -> None:
+        """Raise mpv's read-ahead after a mid-track stall, lower it again after a long stall-free stretch."""
+        if not self.mpv:
+            return
+        now = time.monotonic()
+        changed = (stalled and not self._was_stalled and self._readahead.on_stall(now)) or (
+            not stalled and not self._is_paused and self._readahead.tick(now)
+        )
+        self._was_stalled = stalled
+        if changed:
+            logger.info("Read-ahead is now %ss", self._readahead.secs)
+            try:
+                self.mpv.demuxer_readahead_secs = self._readahead.secs
+            except Exception:
+                logger.exception("Unable to change mpv's read-ahead")
+
+    def _prefetch_target(self) -> Optional[Any]:
+        """The track that will play after the current one ends by itself, if it is worth loading early."""
+        current = self.queue.current_track
+        if not current or self._duration <= 0 or self._duration - self._time_pos > PREFETCH_LEAD_SECONDS:
+            return None
+        nxt = self.queue.get_next_index(natural_end=True)
+        if nxt is None:
+            return None
+        track = self.queue.tracks[nxt]
+        if track.id == current.id or track.id in self._failed_track_ids:
+            return None  # repeat-one, a one-track loop, or a track that already failed
+        return track
+
+    def _sync_prefetch(self) -> None:
+        """Keep mpv's playlist holding exactly the next track, only near the end of the current one.
+
+        Checked on every poll, so a shuffle or repeat change, a re-sync or a jump drops a stale prefetch
+        without each of those having to know about it.
+        """
+        if not self.mpv:
+            return
+        target = self._prefetch_target()
+        wanted = target.id if target else None
+        if wanted == self._prefetched_id:
+            return
+        try:
+            if self._prefetched_id is not None:
+                self.mpv.command("playlist-clear")  # keeps the playing entry, drops the rest
+                self._prefetched_id = None
+            if target:
+                self.mpv.command("loadfile", target.url, "append")
+                self._prefetched_id = target.id
+        except Exception:
+            self._prefetched_id = None
+            logger.exception("Unable to update the prefetched track")
 
     async def _mpv_poll_loop(self) -> None:
         while self._running:
@@ -763,6 +826,8 @@ class BlessedMusicPlayer:
                     )
                     if self._time_pos > 0.0 and self.queue.current_track:
                         self._failed_track_ids.discard(self.queue.current_track.id)
+                    self._tune_buffering(bool(is_caching) and self._time_pos > 0.0)
+                    self._sync_prefetch()
 
                     # Run the visualizer while playing, freeze it on pause, clear it otherwise
                     if self._show_visualizer:
