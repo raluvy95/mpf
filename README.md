@@ -16,6 +16,7 @@ visualizer in a Blessed TUI.
 - 🔒 MPRIS support: track info and play/pause/next/previous/seek/volume on the KDE lock screen, media keys, and `playerctl`.
 - 🔎 Fuzzy queue search, shuffle, repeat, seeking, and volume controls.
 - 💾 Cached playlists with background refresh and offline fallback.
+- 🪟 A resident background player: close the screen, keep the music, and reattach from any terminal.
 - 🌈 Eight visualizer styles (waterfall, bars, braille, waveform, fewbars, thin, galaxy, rainbow) with optional rainbow colouring.
 - ⚙️ An in-app `,` settings screen, so `config.json` never needs editing by hand.
 - 🖱️ Mouse navigation, keyboard controls, and an in-app `?` help screen.
@@ -90,6 +91,18 @@ Run `mpf.py --help` for the full option list.
 A playlist is cached and re-synced after a week. `--force-cache` fetches it from YouTube again right away and
 replaces the cached copy: the cached tracks play meanwhile, and if YouTube cannot be reached they stay.
 
+### The background player
+
+MPF plays through a small background player (`mpv`, the queue, MPRIS and your resume position) and the
+terminal screen is only a client of it. The first `mpf.py` you run starts it; later ones attach to it. This means:
+
+- Pressing `q` only closes the screen. The music keeps playing, and running `mpf.py` again picks it up with no gap.
+- Several terminals can show the same player at once, and any of them can control it.
+- The background player stays until you stop it with `mpf.py quit` (which also saves your position).
+- Running `mpf.py URL` loads that playlist into the running player, unless it is already playing exactly that.
+- After upgrading MPF the old background player may still be running. MPF then asks you to run `mpf.py quit`
+  and start it again, rather than stopping your music for you.
+
 ## ⚙️ Configuration and data
 
 Configuration defaults to `$XDG_CONFIG_HOME/mpf/config.json` or
@@ -142,7 +155,7 @@ Press `?` in MPF for the full in-app reference. Press `,` for settings.
 
 | Control | Action |
 | --- | --- |
-| `q` | Quit |
+| `q` | Close the screen (the music keeps playing, see below) |
 | `Space` | Pause or resume |
 | `n` / `p` | Next or previous track |
 | `s` | Toggle shuffle (turning it off restores the playlist order) |

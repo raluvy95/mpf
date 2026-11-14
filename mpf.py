@@ -54,7 +54,6 @@ def parse_cli_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         help="Fetch the playlist from YouTube again and replace its cached copy, even if the cache is fresh",
     )
     parser.add_argument("--daemon", action="store_true", help=argparse.SUPPRESS)  # internal: the background player
-    parser.add_argument("--adopt-ipc", metavar="SOCKET", help=argparse.SUPPRESS)  # internal: take over a playing mpv
     vim_group = parser.add_mutually_exclusive_group()
     vim_group.add_argument("--vim", dest="vim", action="store_true", help="Enable Vim navigation keys")
     vim_group.add_argument("--no-vim", dest="vim", action="store_false", help="Disable Vim navigation keys")
@@ -109,7 +108,6 @@ def main(argv: Optional[List[str]] = None) -> None:
             auto_play=not cli_args.no_auto_play,
             config_file=cli_args.config,
             headless=True,
-            adopt_ipc=cli_args.adopt_ipc,
             force_refresh=cli_args.force_cache,
         )
         try:

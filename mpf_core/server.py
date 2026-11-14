@@ -3,7 +3,7 @@
 A client says ``hello``, gets a ``snapshot`` of the engine's state and the queue in chunks, then a
 ``state`` frame with the changed fields whenever something changes (position at most every
 ``POSITION_INTERVAL``). It sends ``cmd`` messages, which are validated before the engine acts on them.
-The old plain-text lines (``ping``, ``quit``, ``handover``) are still answered on the same socket.
+The plain-text lines ``ping`` and ``quit`` are also answered on the same socket (``mpf.py quit`` uses them).
 
 Imports neither numpy nor blessed: this runs in the resident background player.
 """
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_LEGACY = {"ping", "quit", "handover"}
+_LEGACY = {"ping", "quit"}
 
 
 class PlayerServer:
@@ -55,7 +55,7 @@ class PlayerServer:
         """Listen on the daemon socket; raises daemon.DaemonAlreadyRunning if another daemon owns it."""
         engine = self._engine
         self._daemon_server = await daemon.serve(
-            engine._request_quit, engine._request_handover, handler=self._handle, line_limit=MAX_CLIENT_LINE
+            engine._request_quit, handler=self._handle, line_limit=MAX_CLIENT_LINE
         )
         engine.on_change = self._schedule_flush
         self._last = engine.state()
@@ -136,7 +136,7 @@ class PlayerServer:
             first = await asyncio.wait_for(reader.readline(), 2.0)
             command = first.decode(errors="replace").strip()
             if command in _LEGACY:
-                reply = daemon.legacy_reply(command, self._engine._request_quit, self._engine._request_handover)
+                reply = daemon.legacy_reply(command, self._engine._request_quit)
                 writer.write(reply.encode() + b"\n")
                 await writer.drain()
                 return

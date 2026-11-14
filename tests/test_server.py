@@ -47,9 +47,6 @@ class FakeEngine:
     def _request_quit(self):
         self.quit_requested = True
 
-    def _request_handover(self):
-        return None
-
     def _play_index(self, index):
         self.calls.append(("play_index", index))
 
@@ -156,6 +153,9 @@ class TestHandshake(ServerTestCase):
         self.assertEqual(await asyncio.to_thread(daemon.send_command, "ping"), "ok")
         self.assertEqual(await asyncio.to_thread(daemon.send_command, "quit"), "ok")
         self.assertTrue(self.engine.quit_requested)
+
+    async def test_the_old_handover_line_is_no_longer_understood(self):
+        self.assertEqual(await asyncio.to_thread(daemon.send_command, "handover"), "")  # closed without a reply
 
     async def test_the_socket_stays_private(self):
         self.assertEqual(os.stat(daemon.socket_path()).st_mode & 0o777, 0o600)

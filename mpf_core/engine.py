@@ -7,7 +7,6 @@ nor blessed, so it stays light enough to run as the resident background player.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import secrets
@@ -44,7 +43,6 @@ from mpf_core.previewer import thumbnail_path
 from mpf_core.server import PlayerServer
 
 DEFAULT_PLAYLIST_URL = ""
-HANDOFF_TIMEOUT_SECONDS = 10.0  # how long the TUI waits for the background player to take over mpv
 PREFETCH_LEAD_SECONDS = 20.0  # queue the next track in mpv this close to the end of the current one
 
 logger = logging.getLogger(__name__)
@@ -101,17 +99,11 @@ class PlaybackEngine:
         auto_play: bool = True,
         config_file: str = CONFIG_FILE,
         headless: bool = False,
-        adopt_ipc: Optional[str] = None,
         force_refresh: bool = False,
     ) -> None:
         self.on_change: Optional[Callable[[], None]] = None  # called after any change a client may show
         self._force_refresh = force_refresh  # fetch the first playlist again however fresh its cache is
         self.headless = headless  # background player: no terminal, visualizer or thumbnails
-        self.detach_on_exit = False  # set by run() when the caller should keep playing in the background
-        self.handed_off = False  # the background player took over this player's mpv, which is still playing
-        self._adopt_ipc = adopt_ipc  # IPC socket of an mpv that is already playing and should be taken over
-        self._adopting = False  # connected to that mpv and not yet resumed from the saved state
-        self._handing_over = False  # a returning TUI asked this background player to give up its mpv
         self._ipc_socket: Optional[str] = None
         self._server: Optional[PlayerServer] = None  # the background player's socket, when headless
         self.config_file = config_file
@@ -246,10 +238,7 @@ class PlaybackEngine:
             except (NotImplementedError, RuntimeError):
                 pass
         try:
-            if self._adopt_ipc:
-                self._adopt_running_mpv(self._adopt_ipc)
-            if self.mpv is None:
-                self._start_own_mpv()
+            self._start_own_mpv()
             if self.mpv:
                 self.mpv.bind_event("end-file", self._on_mpv_end_file)
                 self.mpv.bind_event("file-loaded", self._on_mpv_file_loaded)
@@ -290,22 +279,14 @@ class PlaybackEngine:
         self._save_current_state()
         self.mpris.stop()
         self._set_power_inhibit(False)
-        if self.detach_on_exit and self.mpv:
-            # Start the background player while mpv is still playing here, so there is no gap.
-            self.handed_off = await asyncio.to_thread(self._hand_off_to_daemon)
-        keep_mpv = self.handed_off or self._handing_over
         if self.mpv:
             try:
-                if keep_mpv:
-                    self.mpv.mpv_process = None  # disconnect only: mpv keeps playing for the next owner
-                elif self.headless and self._adopt_ipc and self._ipc_socket == self._adopt_ipc:
-                    self.mpv.command("quit")  # we did not start this mpv, so terminate() would leave it
                 self.mpv.terminate()
             except Exception:
                 logger.exception("MPV shutdown failed")
             finally:
                 self.mpv = None
-        if self._ipc_dir and not keep_mpv:
+        if self._ipc_dir:
             shutil.rmtree(self._ipc_dir, ignore_errors=True)
         if self._server:
             self._server.close()
@@ -336,77 +317,13 @@ class PlaybackEngine:
                 **self._mpv_options(),
             )
 
-    def _adopt_running_mpv(self, socket_path: str) -> None:
-        """Connect to the mpv the TUI left playing. On any problem, fall back to starting a fresh one."""
-        try:
-            info = os.stat(socket_path)
-            if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
-                raise OSError(f"{socket_path} is not a socket owned by this user")
-            mpv = MPV(start_mpv=False, ipc_socket=socket_path, **self._mpv_options())
-            mpv.command("playlist-clear")  # drops a prefetched next track; the playing one stays
-        except Exception:
-            logger.exception("Unable to take over the running mpv; starting a new one")
-            return
-        self.mpv = mpv
-        self._ipc_socket = socket_path
-        # The socket sits in a private mpf-* directory when there was no $XDG_RUNTIME_DIR; it is ours to remove.
-        parent = os.path.dirname(socket_path)
-        self._ipc_dir = parent if os.path.basename(parent).startswith("mpf-") else None
-        self._adopting = True
 
-    def _hand_off_to_daemon(self) -> bool:
-        """Start the background player on this player's mpv and wait until it answers, so playback never stops."""
-        if not self._ipc_socket or not daemon.spawn(self.playlist_url, self.config_file, adopt_ipc=self._ipc_socket):
-            return False
-        deadline = time.monotonic() + HANDOFF_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            if daemon.is_running():
-                return True
-            time.sleep(0.1)
-        with contextlib.suppress(Exception):
-            daemon.stop(timeout=2.0)  # it may still come up late; it must not play after we stop the music
-        return False
 
-    def _resume_index(self, index: int, start_pos: float) -> None:
-        """Start the saved track, or, when an already playing mpv was adopted, carry on with it untouched."""
-        adopted, self._adopting = self._adopting, False
-        track = self.queue.tracks[index] if 0 <= index < len(self.queue.tracks) else None
-        if adopted and track and self.mpv:
-            try:
-                adopted = self.mpv.path == track.url
-            except Exception:
-                adopted = False
-        if adopted:
-            self._play_index(index, loaded=True)  # reloading it would be the audible gap this avoids
-            try:
-                self._is_paused = bool(self.mpv.pause) if self.mpv else False  # it may have been paused meanwhile
-            except Exception:
-                self._is_paused = False
-        else:
-            self._play_index(index, start_pos=start_pos)
 
-    def _should_detach(self) -> bool:
-        """Whether leaving the TUI should keep the music playing in a background process.
-
-        Only audio that is playing is kept: a paused player, or one with nothing loaded, just exits.
-        """
-        return (
-            not self.headless
-            and self.mpv is not None
-            and self.queue.current_track is not None
-            and not self._is_paused
-        )
 
     def _request_quit(self) -> None:
         self._running = False
 
-    def _request_handover(self) -> Optional[str]:
-        """A returning TUI wants this player's mpv: stop controlling it, leave it playing, and exit."""
-        if not self.mpv or not self._ipc_socket:
-            return None
-        self._handing_over = True
-        self._running = False
-        return self._ipc_socket
 
     def _snapshot_playback_state(self) -> Optional[PlaybackState]:
         """Capture the current playback position, track, and settings."""
@@ -470,7 +387,7 @@ class PlaybackEngine:
             self._on_queue_loaded(target_idx)
             self.queue.current_idx = target_idx
             if self.auto_play:
-                self._resume_index(target_idx, start_pos)
+                self._play_index(target_idx, start_pos=start_pos)
 
         # 2. Fetch fresh tracks only when cache is missing or older than 7 days
         if not force and not is_playlist_cache_stale(url):
@@ -521,7 +438,7 @@ class PlaybackEngine:
                 self._on_queue_loaded(target_idx)
                 self.queue.current_idx = target_idx
                 if self.auto_play:
-                    self._resume_index(target_idx, start_pos)
+                    self._play_index(target_idx, start_pos=start_pos)
         except PlaylistFetchError as err:
             self._status_msg = f"Offline; using cached playlist. {err}" if cached else f"Fetch Error: {err}"
             logger.warning("Playlist refresh failed for %s: %s", url, err)

@@ -272,16 +272,27 @@ class TestCli(unittest.TestCase):
 
 
 class TestSpawnArguments(unittest.TestCase):
-    def test_adopt_socket_is_passed_to_the_daemon(self):
+    def test_extra_arguments_and_the_url_are_passed_to_the_daemon(self):
         with patch("subprocess.Popen") as popen:
-            self.assertTrue(daemon.spawn(PLAYLIST_URL, "/tmp/config.json", adopt_ipc="/run/x.sock"))
+            self.assertTrue(
+                daemon.spawn(PLAYLIST_URL, "/tmp/config.json", extra_args=["--no-auto-play", "--force-cache"])
+            )
         command = popen.call_args.args[0]
-        self.assertEqual(command[command.index("--adopt-ipc") + 1], "/run/x.sock")
+        self.assertEqual(command[command.index("--daemon") :], [
+            "--daemon", "--config", "/tmp/config.json", "--no-auto-play", "--force-cache", PLAYLIST_URL,
+        ])
 
-    def test_no_adopt_flag_by_default(self):
+    def test_no_url_means_the_daemon_loads_the_saved_default(self):
+        with patch("subprocess.Popen") as popen:
+            daemon.spawn("", "/tmp/config.json")
+        self.assertEqual(popen.call_args.args[0][-3:], ["--daemon", "--config", "/tmp/config.json"])
+
+    def test_the_old_adopt_option_is_gone(self):
         with patch("subprocess.Popen") as popen:
             daemon.spawn(PLAYLIST_URL, "/tmp/config.json")
         self.assertNotIn("--adopt-ipc", popen.call_args.args[0])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            mpf.parse_cli_args(["--adopt-ipc", "/x.sock"])
 
 
 class TestRealDaemonProcess(RuntimeDirTestCase):

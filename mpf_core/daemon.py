@@ -1,7 +1,8 @@
-"""Background mode: a headless player that outlives the TUI, controlled over a private unix socket.
+"""The resident playback daemon's private unix socket, pid file, and the helpers to start and stop it.
 
 The socket and a pid file live in $XDG_RUNTIME_DIR (0700, cleared at logout), or in the private cache
-directory without one. The only commands are ``ping``, ``quit`` and ``handover`` (give the playing mpv to a returning TUI); the socket is 0600.
+directory without one; the socket is 0600. Clients speak the JSON protocol on it (see ``server.py``);
+the plain-text lines ``ping`` and ``quit`` are also answered, which is what ``mpf.py quit`` uses.
 """
 
 from __future__ import annotations
@@ -101,18 +102,10 @@ def stop(timeout: float = 10.0) -> bool:
     return True
 
 
-def spawn(
-    playlist_url: str, config_file: str, adopt_ipc: Optional[str] = None, extra_args: Sequence[str] = ()
-) -> bool:
-    """Start a detached headless player that resumes where the TUI stopped.
-
-    With ``adopt_ipc`` it takes over the mpv already playing on that IPC socket instead of starting its own,
-    so the music carries on without a gap.
-    """
+def spawn(playlist_url: str, config_file: str, extra_args: Sequence[str] = ()) -> bool:
+    """Start the background player as a detached process that resumes from the saved state."""
     command = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, os.path.abspath(sys.argv[0])]
     command += ["--daemon", "--config", config_file, *extra_args]
-    if adopt_ipc:
-        command += ["--adopt-ipc", adopt_ipc]
     if playlist_url:
         command.append(playlist_url)
     try:
@@ -141,35 +134,13 @@ class DaemonServer:
         _remove(self._pid_file)
 
 
-def handover(timeout: float = 10.0) -> Optional[str]:
-    """Ask a running background player to give up its playing mpv and exit; returns mpv's IPC socket.
-
-    None means there is nothing to take over (no daemon, or it could not hand over), so the caller should
-    fall back to ``stop()``. Raises TimeoutError if the daemon agreed but did not exit in time.
-    """
-    reply = send_command("handover")
-    if not reply or not reply.startswith("ok "):
-        return None
-    deadline = time.monotonic() + timeout
-    while is_running():
-        if time.monotonic() >= deadline:
-            raise TimeoutError("the background player did not exit in time")
-        time.sleep(0.1)
-    return reply[3:]
-
-
-def legacy_reply(
-    command: str, on_quit: Callable[[], None], on_handover: Optional[Callable[[], Optional[str]]] = None
-) -> str:
-    """Answer one of the plain-text control lines (``ping``, ``quit``, ``handover``)."""
+def legacy_reply(command: str, on_quit: Callable[[], None]) -> str:
+    """Answer one of the plain-text control lines (``ping`` or ``quit``)."""
     if command == "ping":
         return "ok"
     if command == "quit":
         on_quit()
         return "ok"
-    if command == "handover":
-        socket_file = on_handover() if on_handover else None
-        return f"ok {socket_file}" if socket_file else "error: cannot hand over"
     return "error: unknown command"
 
 
@@ -178,7 +149,6 @@ Handler = Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]
 
 async def serve(
     on_quit: Callable[[], None],
-    on_handover: Optional[Callable[[], Optional[str]]] = None,
     handler: Optional[Handler] = None,
     line_limit: int = 2**16,
 ) -> DaemonServer:
@@ -195,7 +165,7 @@ async def serve(
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             line = await asyncio.wait_for(reader.readline(), 2.0)
-            reply = legacy_reply(line[:_COMMAND_LIMIT].decode(errors="replace").strip(), on_quit, on_handover)
+            reply = legacy_reply(line[:_COMMAND_LIMIT].decode(errors="replace").strip(), on_quit)
             writer.write(reply.encode() + b"\n")
             await writer.drain()
         except (asyncio.TimeoutError, ConnectionError, ValueError):

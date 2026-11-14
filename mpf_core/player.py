@@ -1138,7 +1138,7 @@ class MediaPlayerFluere(RemoteEngine):
                 "General",
                 [
                     (("?", "Esc"), "Close help", None),
-                    (("q",), "Quit", None),
+                    (("q",), "Close (music keeps playing)", None),
                 ],
             ),
         ]
