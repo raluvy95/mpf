@@ -260,5 +260,62 @@ class TestNoPlayerRunning(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(err.getvalue().count("MPF is not running in the background"), 4)
 
 
+class TestHelpColours(unittest.TestCase):
+    ANSI = r"\x1b\[[0-9;]*m"
+
+    def _help(self, **env):
+        import subprocess
+        import sys
+
+        script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mpf.py")
+        base = {k: v for k, v in os.environ.items() if k not in ("NO_COLOR", "FORCE_COLOR", "CLICOLOR_FORCE")}
+        return subprocess.run(
+            [sys.executable, script, "--help"], env={**base, **env}, capture_output=True, text=True, check=True
+        ).stdout
+
+    def _section(self, text):
+        start = text.rindex("\n", 0, text.index("control commands")) + 1  # from the start of its line, colour code included
+        return text[start:]
+
+    def test_piped_help_has_no_escape_codes(self):
+        self.assertNotIn("\x1b", self._help())
+
+    def test_no_color_is_respected_even_when_forced(self):
+        self.assertNotIn("\x1b", self._help(FORCE_COLOR="1", NO_COLOR="1"))
+
+    def test_coloured_help_uses_the_same_theme_as_the_rest(self):
+        import re
+
+        coloured = self._help(FORCE_COLOR="1")
+        section = self._section(coloured)
+        heading = re.search(r"\x1b\[1;34mcontrol commands", section)  # the colour of "options:" and the rest
+        self.assertTrue(heading, section)
+        self.assertIn("\x1b[1;34moptions:", coloured)  # argparse's own heading is the same bold blue
+        for command in ("play", "pause", "toggle", "next", "prev", "volume", "seek", "status", "quit"):
+            self.assertIn(f"\x1b[1;32m{command}\x1b[0m", section, command)  # like the url positional
+        for placeholder in ("N", "+N", "-N", "SECONDS"):
+            self.assertIn(f"\x1b[1;33m{placeholder}\x1b[0m", section, placeholder)  # like PATH
+        self.assertIn("\x1b[1;36m--json\x1b[0m", section)  # like every other long option
+
+    def test_stripping_the_colours_leaves_exactly_the_plain_text(self):
+        import re
+
+        plain = self._section(self._help())
+        coloured = re.sub(self.ANSI, "", self._section(self._help(FORCE_COLOR="1")))
+        self.assertEqual(coloured, plain)
+
+    def test_descriptions_line_up_in_one_column(self):
+        lines = self._section(self._help()).splitlines()
+        starts = {
+            next(line.index(text) for line in lines if text in line)
+            for text in ("show or set the volume", "jump to, or by", "what is playing", "stop the background player")
+        }
+        self.assertEqual(len(starts), 1, lines)
+
+    def test_a_missing_theme_gives_the_plain_text(self):
+        self.assertEqual(control.usage_help(None), control.USAGE_HELP)
+        self.assertNotIn("\x1b", control.USAGE_HELP)
+
+
 if __name__ == "__main__":
     unittest.main()

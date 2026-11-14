@@ -17,13 +17,25 @@ DEFAULT_PLAYLIST_URL = ""
 __version__ = "1.2.0"  # x-release-please-version
 
 
+class _HelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Keeps the epilog as written, and draws the control commands in the colours of the rest of --help."""
+
+    def _format_text(self, text: str) -> str:
+        from mpf_core.control import USAGE_HELP, usage_help
+
+        if text == USAGE_HELP:
+            theme = getattr(self, "_theme", None)  # Python 3.14: empty strings when colour is off
+            return usage_help(theme) + "\n\n"
+        return super()._format_text(text)
+
+
 def parse_cli_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     from mpf_core.control import ALL_COMMANDS, USAGE_HELP, check_usage
 
     parser = argparse.ArgumentParser(
         description="Terminal YouTube playlist player with MPV, Kitty previews, and audio visualization",
         epilog=USAGE_HELP,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=_HelpFormatter,
     )
     parser.add_argument(
         "url",

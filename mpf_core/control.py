@@ -20,14 +20,42 @@ from mpf_core.models import format_time
 COMMANDS = ("play", "pause", "toggle", "next", "prev", "volume", "seek", "status")
 ALL_COMMANDS = COMMANDS + ("quit",)
 
-USAGE_HELP = (
-    "control commands (act on the running background player):\n"
-    "  play | pause | toggle | next | prev\n"
-    "  volume [N | +N | -N]      show or set the volume, 0-100\n"
-    "  seek [+|-]SECONDS         jump to, or by, a time; M:SS and H:MM:SS work too\n"
-    "  status [--json]           what is playing\n"
-    "  quit                      stop the background player"
+# The help section for these commands, as rows of (kind, text) pieces so it can be coloured with the same
+# theme argparse uses for the rest of --help. The kinds name theme entries: "cmd" is how argparse shows a
+# positional, "label" a placeholder such as PATH, "opt" a long option.
+_HELP_TITLE = "control commands (act on the running background player):"
+_HELP_ROWS = (
+    ([("cmd", "play"), ("", " | "), ("cmd", "pause"), ("", " | "), ("cmd", "toggle"), ("", " | "),
+      ("cmd", "next"), ("", " | "), ("cmd", "prev")], ""),
+    ([("cmd", "volume"), ("", " ["), ("label", "N"), ("", " | "), ("label", "+N"), ("", " | "),
+      ("label", "-N"), ("", "]")], "show or set the volume, 0-100"),
+    ([("cmd", "seek"), ("", " [+|-]"), ("label", "SECONDS")],
+     "jump to, or by, a time; M:SS and H:MM:SS work too"),
+    ([("cmd", "status"), ("", " ["), ("opt", "--json"), ("", "]")], "what is playing"),
+    ([("cmd", "quit")], "stop the background player"),
 )
+_THEME_ATTRS = {"cmd": "action", "label": "label", "opt": "long_option"}
+
+
+def usage_help(theme: Any = None) -> str:
+    """The control-commands section of --help; ``theme`` is argparse's theme (empty strings when not coloured)."""
+
+    def paint(kind: str, text: str) -> str:
+        if theme is None or not kind:
+            return text
+        return f"{getattr(theme, _THEME_ATTRS[kind], '')}{text}{getattr(theme, 'reset', '')}"
+
+    heading = f"{getattr(theme, 'heading', '')}{_HELP_TITLE}{getattr(theme, 'reset', '')}" if theme else _HELP_TITLE
+    column = max(sum(len(text) for _kind, text in pieces) for pieces, description in _HELP_ROWS if description) + 4
+    lines = [heading]
+    for pieces, description in _HELP_ROWS:
+        plain_width = sum(len(text) for _kind, text in pieces)
+        line = "  " + "".join(paint(kind, text) for kind, text in pieces)
+        lines.append(line + (" " * (column - plain_width) + description if description else ""))
+    return "\n".join(lines)
+
+
+USAGE_HELP = usage_help()  # uncoloured
 
 _TIME = re.compile(r"^(?P<sign>[+-]?)(?P<parts>\d+(?:\.\d+)?(?::\d{1,2}(?:\.\d+)?){0,2})$")
 _VOLUME = re.compile(r"^(?P<sign>[+-]?)(?P<amount>\d{1,3})$")
