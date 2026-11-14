@@ -9,6 +9,7 @@ from helpers import fake_daemon
 from test_server import FakeEngine, ServerTestCase
 
 from mpf_core import client as client_module
+from mpf_core import daemon
 from mpf_core.client import DaemonUnavailable, RemoteEngine, VersionMismatch
 from mpf_core.models import RepeatMode, Track, TrackQueue
 from mpf_core.player import MediaPlayerFluere
@@ -398,3 +399,32 @@ class TestKeysBecomeCommands(ClientTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOlderBackgroundPlayer(unittest.IsolatedAsyncioTestCase):
+    """A 1.2.0 background player only knows the plain-text lines: it answers the hello with plain text."""
+
+    async def asyncSetUp(self):
+        import shutil
+        import tempfile
+
+        self._tmp = tempfile.mkdtemp(prefix="mpf-client-test-")
+        os.chmod(self._tmp, 0o700)
+        patcher = patch.dict(os.environ, {"XDG_RUNTIME_DIR": self._tmp})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
+        self.quits = []
+        self.old = await daemon.serve(lambda: self.quits.append(True))  # the old plain-text-only handler
+        self.addCleanup(self.old.close)
+
+    async def test_the_user_is_told_to_run_quit(self):
+        player = RemoteEngine(config_file=os.path.join(self._tmp, "c.json"))
+        with patch.object(client_module.daemon, "spawn") as spawn, self.assertRaises(VersionMismatch) as raised:
+            await player.attach()
+        self.assertIn("mpf.py quit", str(raised.exception))
+        spawn.assert_not_called()  # it is running: starting a second one would only fail
+
+    async def test_mpf_py_quit_still_stops_it(self):
+        self.assertTrue(await asyncio.to_thread(daemon.send_command, "quit") == "ok")
+        self.assertEqual(self.quits, [True])

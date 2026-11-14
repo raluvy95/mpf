@@ -154,12 +154,17 @@ class RemoteEngine:
                 raise DaemonUnavailable("the background player closed the connection")
             return decode(line, MAX_SERVER_FRAME)
 
+        mismatch = VersionMismatch(
+            "the background player is an older or newer version of MPF; run `mpf.py quit` and start MPF again"
+        )
         try:
-            first = await frame()
+            try:
+                first = await frame()
+            except ProtocolError as err:
+                # A background player from before the JSON protocol answers the hello with a plain-text line.
+                raise mismatch from err
             if first["t"] == "error" and first.get("code") == "version":
-                raise VersionMismatch(
-                    "the background player is an older or newer version of MPF; run `mpf.py quit` and start MPF again"
-                )
+                raise mismatch
             if first["t"] != "welcome":
                 raise DaemonUnavailable("the background player did not greet this client")
             self._queue_parts.clear()
