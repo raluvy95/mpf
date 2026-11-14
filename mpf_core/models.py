@@ -3,41 +3,25 @@
 from __future__ import annotations
 
 import enum
-import math
 import random
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from mpf_core.fuzzy import fuzzy_filter_tracks
 from mpf_core.metadata import ID_LIMIT, NAME_LIMIT, TITLE_LIMIT, clean_text
+from mpf_core.text import format_time, watch_url  # noqa: F401  (format_time is re-exported)
 
 # ── URL/thumbnail helpers ────────────────────────────────────────────────────
 
-_YT_SHORT_PREFIX = "https://youtu.be/"
 _YTIMG_HQ_TEMPLATE = "https://i.ytimg.com/vi/{id}/hqdefault.jpg"
 
 
 def _make_url(video_id: str) -> str:
-    return f"{_YT_SHORT_PREFIX}{video_id}"
+    return watch_url(video_id)
 
 
 def _make_thumbnail(video_id: str) -> str:
     return _YTIMG_HQ_TEMPLATE.format(id=video_id)
-
-
-# ── Utility ──────────────────────────────────────────────────────────────────
-
-def format_time(seconds: float | int | None) -> str:
-    """Format seconds into HH:MM:SS or MM:SS string."""
-    if seconds is None or math.isnan(seconds) or seconds < 0:
-        return "--:--"
-    total_sec = int(round(seconds))
-    hrs = total_sec // 3600
-    mins = (total_sec % 3600) // 60
-    secs = total_sec % 60
-    if hrs > 0:
-        return f"{hrs:d}:{mins:02d}:{secs:02d}"
-    return f"{mins:02d}:{secs:02d}"
 
 
 # ── Track ────────────────────────────────────────────────────────────────────

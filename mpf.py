@@ -2,40 +2,48 @@
 
 """mpf - Minimal YouTube Playlist Streaming TUI with MPV, Blessed, and PipeWire."""
 
-import argparse
-import logging
-import logging.handlers
+from __future__ import annotations
+
 import os
 import sys
-from typing import List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
-from mpf_core.config import load_default_playlist
-from mpf_core.metadata import RedactingFilter
+if TYPE_CHECKING:
+    import argparse
+
+# Only the light modules are imported here. The control commands (mpf.py pause, status...) run from key bindings
+# and status bars, so everything heavy (logging, asyncio, the player) is imported only by the paths that need it.
 from mpf_core.paths import CACHE_DIR, CONFIG_FILE, LOG_FILE
 
 DEFAULT_PLAYLIST_URL = ""
 __version__ = "1.2.0"  # x-release-please-version
 
 
-class _HelpFormatter(argparse.RawDescriptionHelpFormatter):
+def _help_formatter_class() -> Any:
     """Keeps the epilog as written, and draws the control commands in the colours of the rest of --help."""
+    import argparse
 
-    def _format_text(self, text: str) -> str:
-        from mpf_core.control import USAGE_HELP, usage_help
+    class HelpFormatter(argparse.RawDescriptionHelpFormatter):
+        def _format_text(self, text: str) -> str:
+            from mpf_core.control import USAGE_HELP, usage_help
 
-        if text == USAGE_HELP:
-            theme = getattr(self, "_theme", None)  # Python 3.14: empty strings when colour is off
-            return usage_help(theme) + "\n\n"
-        return super()._format_text(text)
+            if text == USAGE_HELP:
+                theme = getattr(self, "_theme", None)  # Python 3.14: empty strings when colour is off
+                return usage_help(theme) + "\n\n"
+            return super()._format_text(text)
+
+    return HelpFormatter
 
 
 def parse_cli_args(args: Optional[List[str]] = None) -> argparse.Namespace:
+    import argparse
+
     from mpf_core.control import ALL_COMMANDS, USAGE_HELP, check_usage
 
     parser = argparse.ArgumentParser(
         description="Terminal YouTube playlist player with MPV, Kitty previews, and audio visualization",
         epilog=USAGE_HELP,
-        formatter_class=_HelpFormatter,
+        formatter_class=_help_formatter_class(),
     )
     parser.add_argument(
         "url",
@@ -91,12 +99,16 @@ def parse_cli_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     return parsed
 
 
-class _PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
-    """Rotating log whose files are only readable by their owner, including after a rotation."""
+def _private_log_handler(log_file: str, max_bytes: int, backups: int) -> Any:
+    """A rotating log handler whose files are only readable by their owner, including after a rotation."""
+    import logging.handlers
 
-    def _open(self):  # type: ignore[no-untyped-def]
-        fd = os.open(self.baseFilename, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        return os.fdopen(fd, self.mode, encoding=self.encoding, errors=self.errors)
+    class PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
+        def _open(self):  # type: ignore[no-untyped-def]
+            fd = os.open(self.baseFilename, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            return os.fdopen(fd, self.mode, encoding=self.encoding, errors=self.errors)
+
+    return PrivateRotatingFileHandler(log_file, maxBytes=max_bytes, backupCount=backups, encoding="utf-8")
 
 
 def configure_logging(
@@ -106,10 +118,14 @@ def configure_logging(
 
     The log can contain track titles and player errors, so the directory is 0700 and the files 0600.
     """
+    import logging
+
+    from mpf_core.metadata import RedactingFilter
+
     try:
         os.makedirs(cache_dir, mode=0o700, exist_ok=True)
         os.chmod(cache_dir, 0o700)
-        handler = _PrivateRotatingFileHandler(log_file, maxBytes=max_bytes, backupCount=backups, encoding="utf-8")
+        handler = _private_log_handler(log_file, max_bytes, backups)
         os.chmod(log_file, 0o600)  # a log created by an older version had the default mode
     except OSError:
         logging.basicConfig(level=logging.CRITICAL)
@@ -119,17 +135,57 @@ def configure_logging(
     logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
-def main(argv: Optional[List[str]] = None) -> None:
-    cli_args = parse_cli_args(argv)
-    configure_logging()
+def _fast_control(argv: List[str]) -> Optional[int]:
+    """Run a plain control command without building the argument parser, or return None to use the parser.
 
-    # Lazy loading
+    Importing argparse alone costs about as much as everything else a command does, and these run from key
+    bindings and status bars. Only the simple valid forms are taken here (``pause``, ``volume 40``,
+    ``seek -30``, ``status --json``); anything else, including every mistake, goes to the parser so its
+    errors and help stay exactly as they are.
+    """
+    from mpf_core import control
+
+    if not argv or argv[0] not in control.COMMANDS:
+        return None
+    as_json = "--json" in argv[1:]
+    rest = [arg for arg in argv[1:] if arg != "--json"]
+    if len(rest) > 1 or any(arg.startswith("--") for arg in rest):
+        return None
+    value = rest[0] if rest else None
+    if control.check_usage(argv[0], value, as_json):
+        return None
+    try:
+        return control.run(argv[0], value, as_json)
+    except KeyboardInterrupt:
+        return 130
+
+
+def main(argv: Optional[List[str]] = None) -> None:
+    fast = _fast_control(sys.argv[1:] if argv is None else argv)
+    if fast is not None:
+        raise SystemExit(fast)
+    cli_args = parse_cli_args(argv)
+
+    # Lazy loading. The control commands are one-shot clients of the running player and must start fast, so
+    # they are dispatched first, before anything heavy is imported: no log file, no asyncio, no player.
+    from mpf_core import control
+
+    if cli_args.url in control.COMMANDS and not cli_args.daemon:
+        try:
+            exit_code = control.run(cli_args.url, cli_args.value, cli_args.json)
+        except KeyboardInterrupt:
+            exit_code = 130
+        raise SystemExit(exit_code)
+
     import asyncio
+
+    configure_logging()
 
     from mpf_core import daemon
 
     if cli_args.daemon:
         # The background player runs the engine alone: no terminal, numpy or blessed.
+        from mpf_core.config import load_default_playlist
         from mpf_core.engine import PlaybackEngine
 
         engine = PlaybackEngine(
@@ -145,19 +201,6 @@ def main(argv: Optional[List[str]] = None) -> None:
             pass
         return
 
-    from mpf_core import MediaPlayerFluere
-    from mpf_core.client import DaemonUnavailable
-    from mpf_core.control import COMMANDS as CONTROL_COMMANDS
-
-    if cli_args.url in CONTROL_COMMANDS:
-        from mpf_core import control
-
-        try:
-            exit_code = asyncio.run(control.run(cli_args.url, cli_args.value, cli_args.json, cli_args.config))
-        except KeyboardInterrupt:
-            exit_code = 130
-        raise SystemExit(exit_code)
-
     if cli_args.url == "quit":
         try:
             stopped = daemon.stop()
@@ -166,6 +209,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             raise SystemExit(1) from err
         print("Stopped the MPF background player." if stopped else "MPF is not running in the background.")
         return
+
+    from mpf_core import MediaPlayerFluere
+    from mpf_core.client import DaemonUnavailable
 
     # The background player owns playback. This only draws it, so a launch attaches to the running one
     # (starting it first when there is none) and leaving it just disconnects.

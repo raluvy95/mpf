@@ -30,10 +30,6 @@ class DaemonUnavailable(RuntimeError):
     """The background player is not running and could not be started."""
 
 
-class DaemonNotRunning(DaemonUnavailable):
-    """There is no background player, and this client was told not to start one."""
-
-
 class VersionMismatch(DaemonUnavailable):
     """The running background player speaks a different protocol version."""
 
@@ -102,13 +98,9 @@ class RemoteEngine:
 
     # ── Connecting ───────────────────────────────────────────────────────────
 
-    async def attach(self, start_daemon: bool = True) -> None:
-        """Connect to the background player and load its state.
-
-        With ``start_daemon`` (the default) one is started first if none is running; without it a missing
-        player raises DaemonNotRunning, which is what the control subcommands want.
-        """
-        await self._connect(start_daemon)
+    async def attach(self) -> None:
+        """Connect to the background player, starting it first if none is running, and load its state."""
+        await self._connect()
         if self._requested_url and not self.started_daemon:
             # An already running daemon: load what was asked for, unless it is playing exactly that.
             if self._requested_url != self.playlist_url or self._force_refresh:
@@ -129,12 +121,10 @@ class RemoteEngine:
             extra.append("--force-cache")
         return daemon.spawn(self._requested_url, self.config_file, extra_args=extra)
 
-    async def _connect(self, start_daemon: bool = True) -> None:
+    async def _connect(self) -> None:
         connection = await self._open()
         if connection is None:
             await asyncio.to_thread(daemon.is_running)  # removes a stale socket left by a crashed daemon
-            if not start_daemon:
-                raise DaemonNotRunning("MPF is not running in the background")
             self.started_daemon = True
             self._on_starting_daemon()
             if not await asyncio.to_thread(self._spawn_daemon):
@@ -370,11 +360,6 @@ class RemoteEngine:
         if fallback_clients is not None:
             args["fallback_clients"] = fallback_clients
         self._send("set_playback_config", **args)
-
-    async def flush(self) -> None:
-        """Wait until everything sent so far has left this process, so a short-lived client can exit."""
-        if self._writer and not self._writer.is_closing():
-            await self._writer.drain()
 
     # ── Leaving ──────────────────────────────────────────────────────────────
 

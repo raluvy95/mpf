@@ -1,5 +1,6 @@
 """Control subcommands: argument checking, their effect on a running player, and the status output."""
 
+import asyncio
 import contextlib
 import io
 import json
@@ -12,8 +13,7 @@ from unittest.mock import patch
 from test_server import ServerTestCase
 
 import mpf
-from mpf_core import client as client_module
-from mpf_core import control
+from mpf_core import control, daemon
 from mpf_core.control import ControlError, check_usage, parse_seek, parse_volume
 from mpf_core.models import Track
 
@@ -116,17 +116,18 @@ class TestCommandLine(unittest.TestCase):
 
 class ControlTestCase(ServerTestCase):
     async def run_command(self, *argv):
-        """Run a control command as the real entry point does; returns (exit code, stdout, stderr)."""
+        """Run a control command as the real entry point does; returns (exit code, stdout, stderr).
+
+        It blocks, so it runs in a thread: the test's server lives on this event loop. It does not wait for
+        anything afterwards, because the command has to have been handled by the time it returns.
+        """
         command, value = argv[0], (argv[1] if len(argv) > 1 and argv[1] != "--json" else None)
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = await control.run(command, value, "--json" in argv, os.path.join(self._tmp, "c.json"))
-        await self.settle()
+            code = await asyncio.to_thread(control.run, command, value, "--json" in argv)
         return code, out.getvalue(), err.getvalue()
 
     async def settle(self, seconds=0.1):
-        import asyncio
-
         await asyncio.sleep(seconds)
 
 
@@ -165,6 +166,14 @@ class TestCommandsReachThePlayer(ControlTestCase):
         await self.settle()
         await self.run_command("toggle")
         self.assertEqual(self.engine.calls, [("set_paused", False)])
+
+    async def test_the_command_has_been_handled_by_the_time_it_returns(self):
+        # No waiting at all: the control command only returns once the player has read it and closed.
+        for argv in (("pause",), ("next",), ("volume", "33"), ("seek", "+7")):
+            self.engine.calls.clear()
+            code, _out, _err = await self.run_command(*argv)
+            self.assertEqual(code, 0)
+            self.assertEqual(len(self.engine.calls), 1, argv)
 
     async def test_bad_usage_exits_2_without_connecting(self):
         code, _, err = await self.run_command("seek", "soon")
@@ -250,10 +259,10 @@ class TestNoPlayerRunning(unittest.IsolatedAsyncioTestCase):
         os.chmod(tmp, 0o700)
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         out, err = io.StringIO(), io.StringIO()
-        with patch.dict(os.environ, {"XDG_RUNTIME_DIR": tmp}), patch.object(client_module.daemon, "spawn") as spawn:
+        with patch.dict(os.environ, {"XDG_RUNTIME_DIR": tmp}), patch("mpf_core.daemon.spawn") as spawn:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 for command, value in (("pause", None), ("status", None), ("volume", "50"), ("seek", "+5")):
-                    code = await control.run(command, value, False, os.path.join(tmp, "c.json"))
+                    code = await asyncio.to_thread(control.run, command, value, False)
                     self.assertEqual(code, 1, command)
         spawn.assert_not_called()
         self.assertEqual(out.getvalue(), "")
@@ -320,6 +329,105 @@ class TestHelpColours(unittest.TestCase):
     def test_a_missing_theme_gives_the_plain_text(self):
         self.assertEqual(control.usage_help(None), control.USAGE_HELP)
         self.assertNotIn("\x1b", control.USAGE_HELP)
+
+
+class TestOlderBackgroundPlayer(unittest.IsolatedAsyncioTestCase):
+    """A 1.2.0 background player only knows the plain-text lines."""
+
+    async def test_it_is_explained_and_nothing_is_sent(self):
+        tmp = tempfile.mkdtemp(prefix="mpf-control-test-")
+        os.chmod(tmp, 0o700)
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        with patch.dict(os.environ, {"XDG_RUNTIME_DIR": tmp}):
+            quits = []
+            old = await daemon.serve(lambda: quits.append(True))  # the old plain-text-only handler
+            self.addCleanup(old.close)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = await asyncio.to_thread(control.run, "pause", None, False)
+        self.assertEqual(code, 1)
+        self.assertIn("mpf.py quit", err.getvalue())
+        self.assertEqual(quits, [])
+
+
+class TestStaysQuick(unittest.TestCase):
+    """These run from key bindings and status bars, so what they import is part of how they behave."""
+
+    HEAVY = ("asyncio", "logging", "numpy", "blessed", "argparse", "mpf_core.client", "mpf_core.player")
+
+    def _loaded_after(self, code):
+        import subprocess
+        import sys
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        script = f"import sys; sys.path.insert(0, {root!r}); {code}; print(','.join(m for m in {self.HEAVY!r} if m in sys.modules))"
+        out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True, cwd=root)
+        return out.stdout.strip()
+
+    def test_the_control_module_loads_none_of_the_heavy_parts(self):
+        self.assertEqual(self._loaded_after("import mpf_core.control"), "")
+
+    def test_a_plain_command_through_main_never_builds_the_parser(self):
+        # control.run is replaced, so this checks only what main() imports on the way to it.
+        code = "import mpf, mpf_core.control as c; c.run = lambda *a: 0; mpf.main(['status'])"
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        import subprocess
+        import sys
+
+        script = f"import sys; sys.path.insert(0, {root!r}); \ntry:\n    {code}\nexcept SystemExit: pass\nprint(','.join(m for m in {self.HEAVY!r} if m in sys.modules))"
+        out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True, cwd=root)
+        self.assertEqual(out.stdout.strip(), "")
+
+
+class TestFastPath(unittest.TestCase):
+    """mpf.main() runs the plain forms itself and leaves everything else to the argument parser."""
+
+    def _run(self, *argv):
+        with patch("mpf_core.control.run", return_value=0) as run:
+            try:
+                mpf.main(list(argv))
+            except SystemExit as exit_:
+                return run, exit_.code
+        return run, None
+
+    def test_plain_forms_are_taken_directly(self):
+        for argv, expected in (
+            (("pause",), ("pause", None, False)),
+            (("next",), ("next", None, False)),
+            (("volume",), ("volume", None, False)),
+            (("volume", "40"), ("volume", "40", False)),
+            (("volume", "-5"), ("volume", "-5", False)),
+            (("seek", "+30"), ("seek", "+30", False)),
+            (("seek", "1:30"), ("seek", "1:30", False)),
+            (("status",), ("status", None, False)),
+            (("status", "--json"), ("status", None, True)),
+            (("--json",), None),
+        ):
+            with self.subTest(argv=argv):
+                run, code = self._run(*argv)
+                if expected is None:
+                    run.assert_not_called()
+                else:
+                    run.assert_called_once_with(*expected)
+                    self.assertEqual(code, 0)
+
+    def test_mistakes_and_other_options_go_to_the_parser(self):
+        for argv in (("seek",), ("volume", "loud"), ("pause", "now"), ("next", "--json"), ("pause", "--config", "x"),
+                     ("status", "a", "b")):
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()) as err:
+                run, code = self._run(*argv)
+                if argv == ("pause", "--config", "x"):
+                    self.assertEqual(run.call_count, 1)  # valid: the parser accepts it and runs it
+                else:
+                    run.assert_not_called()
+                    self.assertEqual(code, 2)
+                    self.assertIn("error:", err.getvalue())
+
+    def test_the_exit_code_is_the_commands(self):
+        with patch("mpf_core.control.run", return_value=1):
+            with self.assertRaises(SystemExit) as raised:
+                mpf.main(["status"])
+        self.assertEqual(raised.exception.code, 1)
 
 
 if __name__ == "__main__":

@@ -11,18 +11,15 @@ import asyncio
 import logging
 import os
 import socket
-import stat
 import subprocess
 import sys
 import time
 from typing import Awaitable, Callable, Optional, Sequence
 
-from mpf_core.paths import CACHE_DIR
+from mpf_core.paths import PID_NAME, SOCKET_NAME, state_dir
 
 logger = logging.getLogger(__name__)
 
-SOCKET_NAME = "mpf-daemon.sock"
-PID_NAME = "mpf-daemon.pid"
 _COMMAND_LIMIT = 64
 _REPLY_LIMIT = 4096  # a reply can carry a socket path
 
@@ -32,15 +29,7 @@ class DaemonAlreadyRunning(RuntimeError):
 
 
 def _state_dir() -> str:
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "")
-    try:
-        info = os.stat(runtime_dir)
-        if stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077:
-            return runtime_dir
-    except OSError:
-        pass
-    os.makedirs(CACHE_DIR, mode=0o700, exist_ok=True)
-    return CACHE_DIR
+    return state_dir(create=True)
 
 
 def socket_path() -> str:

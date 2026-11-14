@@ -44,6 +44,7 @@ mkdir -p "$(dirname "${OUTPUT}")"
     --hidden-import mpf_core.previewer \
     --hidden-import mpf_core.protocol \
     --hidden-import mpf_core.server \
+    --hidden-import mpf_core.text \
     --hidden-import mpf_core.visualizer \
     --exclude-module yt_dlp \
     "${ROOT_DIR}/mpf.py"

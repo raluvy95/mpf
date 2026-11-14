@@ -10,15 +10,14 @@ from __future__ import annotations
 import logging
 import re
 
-TITLE_LIMIT = 300
-NAME_LIMIT = 200
-ID_LIMIT = 64
-URL_LIMIT = 2048
-
-_WHITESPACE_CONTROLS = re.compile(r"[\t\n\r\x0b\x0c  ]+")
-# C0 and C1 controls (ESC, BEL, NUL, CSI...), DEL, bidi overrides/isolates, and lone surrogates.
-_UNSAFE = re.compile("[\x00-\x1f\x7f-\x9f‪-‮⁦-⁩\ud800-\udfff]")
-
+from mpf_core.text import (  # noqa: F401
+    _UNSAFE,
+    ID_LIMIT,
+    NAME_LIMIT,
+    TITLE_LIMIT,
+    URL_LIMIT,
+    clean_text,
+)
 
 _URL = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*)://([^\s/?#]+)([^\s?#]*)([?#]\S*)?")
 # Hosts whose URLs are public identifiers worth keeping in messages (?v=VIDEO_ID, ?list=...).
@@ -48,14 +47,6 @@ def redact_urls(text: str) -> str:
         return f"{scheme}://{hostport}{path}{query}{trailing}"
 
     return _URL.sub(redact, text)
-
-
-def clean_text(text: object, limit: int = TITLE_LIMIT) -> str:
-    """Return ``text`` without control characters, bidi overrides or lone surrogates, capped to ``limit``."""
-    if not isinstance(text, str):
-        return ""
-    text = _WHITESPACE_CONTROLS.sub(" ", text)
-    return _UNSAFE.sub("", text).strip()[:limit]
 
 
 # Bracketed tags that describe the upload, not the song: "(Official Video)", "[HD]", "(Lyrics)"...
