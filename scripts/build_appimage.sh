@@ -27,15 +27,22 @@ mkdir -p "$(dirname "${OUTPUT}")"
     --distpath "${BUILD_DIR}/pyinstaller-dist" \
     --workpath "${BUILD_DIR}/pyinstaller-work" \
     --specpath "${BUILD_DIR}" \
+    --hidden-import mpf_core.buffering \
     --hidden-import mpf_core.cache \
+    --hidden-import mpf_core.client \
     --hidden-import mpf_core.config \
+    --hidden-import mpf_core.daemon \
+    --hidden-import mpf_core.engine \
     --hidden-import mpf_core.fetcher \
     --hidden-import mpf_core.fuzzy \
+    --hidden-import mpf_core.metadata \
     --hidden-import mpf_core.models \
     --hidden-import mpf_core.mpris \
     --hidden-import mpf_core.paths \
     --hidden-import mpf_core.player \
     --hidden-import mpf_core.previewer \
+    --hidden-import mpf_core.protocol \
+    --hidden-import mpf_core.server \
     --hidden-import mpf_core.visualizer \
     --exclude-module yt_dlp \
     "${ROOT_DIR}/mpf.py"
