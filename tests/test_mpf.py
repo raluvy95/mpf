@@ -1583,6 +1583,19 @@ class TestOpenDialog(unittest.TestCase):
         lines, placements = player._open_lines(width, height)
         return [cls._strip(line) for line in lines], placements
 
+    def test_dialog_repaints_the_margin_so_no_dashboard_text_shows_through(self):
+        import contextlib
+        import io
+
+        player = self._player()
+        player._handle_key("o")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            player._render_help()
+        # Every row starts at column 0 and blanks the two margin columns before drawing.
+        self.assertIn(player._move(0, 0) + "  ", out.getvalue())
+        self.assertIn(player._move(0, 5) + "  ", out.getvalue())
+
     @staticmethod
     def _strip(text):
         import re
