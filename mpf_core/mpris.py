@@ -16,7 +16,7 @@ from dbus_fast.service import ServiceInterface, dbus_property, method, signal
 from mpf_core.metadata import parse_track
 
 if TYPE_CHECKING:
-    from mpf_core.player import BlessedMusicPlayer
+    from mpf_core.player import MediaPlayerFluere
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ def _track_path(track_id: str) -> str:
 
 
 class _Root(ServiceInterface):
-    def __init__(self, player: "BlessedMusicPlayer") -> None:
+    def __init__(self, player: "MediaPlayerFluere") -> None:
         super().__init__("org.mpris.MediaPlayer2")
         self._player = player
 
@@ -70,7 +70,7 @@ class _Root(ServiceInterface):
 
 
 class _Player(ServiceInterface):
-    def __init__(self, player: "BlessedMusicPlayer") -> None:
+    def __init__(self, player: "MediaPlayerFluere") -> None:
         super().__init__("org.mpris.MediaPlayer2.Player")
         self._p = player
 
@@ -216,7 +216,7 @@ def build_metadata(track: Any, duration: float, art_path: str = "") -> Dict[str,
 class MprisService:
     """Owns the session-bus connection and publishes player state changes."""
 
-    def __init__(self, player: "BlessedMusicPlayer") -> None:
+    def __init__(self, player: "MediaPlayerFluere") -> None:
         self._player = player
         self._bus: Optional[MessageBus] = None
         self._iface: Optional[_Player] = None

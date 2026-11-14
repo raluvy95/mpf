@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 from mpf_core.buffering import AdaptiveReadahead
 from mpf_core.models import RepeatMode, Track, TrackQueue
-from mpf_core.player import PREFETCH_LEAD_SECONDS, BlessedMusicPlayer
+from mpf_core.player import PREFETCH_LEAD_SECONDS, MediaPlayerFluere
 
 LEVELS = (10, 20, 45, 90)
 
@@ -56,7 +56,7 @@ class TestAdaptiveReadahead(unittest.TestCase):
 
 class TestTuneBuffering(unittest.TestCase):
     def setUp(self):
-        self.player = BlessedMusicPlayer("https://www.youtube.com/playlist?list=x", auto_play=False)
+        self.player = MediaPlayerFluere("https://www.youtube.com/playlist?list=x", auto_play=False)
         self.addCleanup(self.player.previewer.close)
         self.player.mpv = MagicMock()
 
@@ -75,7 +75,7 @@ class TestTuneBuffering(unittest.TestCase):
 
 class TestPrefetch(unittest.TestCase):
     def setUp(self):
-        self.player = BlessedMusicPlayer("https://www.youtube.com/playlist?list=x", auto_play=False)
+        self.player = MediaPlayerFluere("https://www.youtube.com/playlist?list=x", auto_play=False)
         self.addCleanup(self.player.previewer.close)
         self.player.queue = TrackQueue([Track("a", "A"), Track("b", "B"), Track("c", "C")])
         self.player.mpv = MagicMock()

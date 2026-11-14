@@ -773,8 +773,8 @@ class TestPlayerInitialization(unittest.TestCase):
 
     @patch("mpf_core.player.MPV")
     def test_mpv_inhibits_screensaver_only_during_playback(self, mock_mpv):
-        from mpf_core.player import BlessedMusicPlayer
-        player = BlessedMusicPlayer()
+        from mpf_core.player import MediaPlayerFluere
+        player = MediaPlayerFluere()
         # Simulate run mpv init snippet
         player.mpv = mock_mpv(
             video=False,
@@ -798,9 +798,9 @@ class TestPlayerInitialization(unittest.TestCase):
 
 class TestTrackListMouseNavigation(unittest.TestCase):
     def test_wheel_down_moves_selection_within_track_list(self):
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
-        player = BlessedMusicPlayer(auto_play=False)
+        player = MediaPlayerFluere(auto_play=False)
         self.addCleanup(player.previewer.close)
         player.queue.set_tracks([Track(str(i), f"Track {i}") for i in range(10)])
         player._list_top_row = 4
@@ -820,9 +820,9 @@ class TestSpectrumStyles(unittest.TestCase):
     @patch("mpf_core.player.load_visualizer_preferences", return_value=("waterfall", True))
     @patch("mpf_core.player.save_visualizer_preferences")
     def test_a_cycles_spectrum_styles(self, _save, _load):
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
-        player = BlessedMusicPlayer(auto_play=False)
+        player = MediaPlayerFluere(auto_play=False)
         self.addCleanup(player.previewer.close)
 
         self.assertEqual(player._spectrum_style, "waterfall")
@@ -835,7 +835,7 @@ class TestSpectrumStyles(unittest.TestCase):
             self.assertEqual(player._spectrum_style, expected)
 
     def test_style_and_visibility_survive_restart(self):
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config = os.path.join(tmpdir, "config.json")
@@ -851,13 +851,13 @@ class TestSpectrumStyles(unittest.TestCase):
                     ),
                 ),
             ):
-                player = BlessedMusicPlayer(auto_play=False)
+                player = MediaPlayerFluere(auto_play=False)
                 self.addCleanup(player.previewer.close)
                 player._handle_key("a")
                 player._handle_key("v")
                 self.assertEqual(load_visualizer_preferences(config), ("bars", False))
 
-                restarted = BlessedMusicPlayer(auto_play=False)
+                restarted = MediaPlayerFluere(auto_play=False)
                 self.addCleanup(restarted.previewer.close)
                 self.assertEqual(restarted._spectrum_style, "bars")
         self.assertFalse(restarted._show_visualizer)
@@ -865,16 +865,16 @@ class TestSpectrumStyles(unittest.TestCase):
 
 class TestPlayerQualityOfLife(unittest.TestCase):
     def test_dashboard_progress_meter_clamps_and_fills_available_width(self):
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
-        self.assertEqual(BlessedMusicPlayer._progress_meter(10, 0.5), "━━━━●─────")
-        self.assertEqual(BlessedMusicPlayer._progress_meter(4, -1.0), "●───")
-        self.assertEqual(BlessedMusicPlayer._progress_meter(4, 2.0), "━━━●")
+        self.assertEqual(MediaPlayerFluere._progress_meter(10, 0.5), "━━━━●─────")
+        self.assertEqual(MediaPlayerFluere._progress_meter(4, -1.0), "●───")
+        self.assertEqual(MediaPlayerFluere._progress_meter(4, 2.0), "━━━●")
 
     def test_dashboard_uses_icons_without_verbose_labels(self):
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
-        player = BlessedMusicPlayer(auto_play=False, vim_mode=True)
+        player = MediaPlayerFluere(auto_play=False, vim_mode=True)
         self.addCleanup(player.previewer.close)
         player.queue.set_tracks([Track("1", "One"), Track("2", "Two")])
         player._volume = 42
@@ -887,9 +887,9 @@ class TestPlayerQualityOfLife(unittest.TestCase):
         self.assertIn("\U000f049f", player._dashboard_summary())
 
     def test_help_overlay_opens_and_closes_with_question_mark_or_escape(self):
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
-        player = BlessedMusicPlayer(auto_play=False)
+        player = MediaPlayerFluere(auto_play=False)
         self.addCleanup(player.previewer.close)
 
         player._handle_key("?")
@@ -899,9 +899,9 @@ class TestPlayerQualityOfLife(unittest.TestCase):
 
     @patch("mpf_core.player.save_vim_mode")
     def test_uppercase_v_toggles_vim_mode(self, save_vim_mode_mock):
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
-        player = BlessedMusicPlayer(auto_play=False, vim_mode=True)
+        player = MediaPlayerFluere(auto_play=False, vim_mode=True)
         self.addCleanup(player.previewer.close)
 
         self.assertTrue(player._vim_mode)
@@ -910,9 +910,9 @@ class TestPlayerQualityOfLife(unittest.TestCase):
         save_vim_mode_mock.assert_called_once_with(False, player.config_file)
 
     def test_vim_mode_uses_hjkl_instead_of_arrow_keys(self):
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
-        player = BlessedMusicPlayer(auto_play=False, vim_mode=True)
+        player = MediaPlayerFluere(auto_play=False, vim_mode=True)
         self.addCleanup(player.previewer.close)
         player.mpv = MagicMock()
         left = type("Key", (), {"name": "KEY_LEFT"})()
@@ -924,9 +924,9 @@ class TestPlayerQualityOfLife(unittest.TestCase):
         player.mpv.command.assert_called_once_with("seek", -5, "relative")
 
     def test_standard_mode_uses_arrow_keys_instead_of_hjkl(self):
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
-        player = BlessedMusicPlayer(auto_play=False, vim_mode=False)
+        player = MediaPlayerFluere(auto_play=False, vim_mode=False)
         self.addCleanup(player.previewer.close)
         player.mpv = MagicMock()
         left = type("Key", (), {"name": "KEY_LEFT"})()
@@ -954,12 +954,12 @@ class TestSettingsScreen(unittest.TestCase):
     def _player(self, **kwargs):
         import tempfile
 
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         config = os.path.join(directory.name, "config.json")
-        player = BlessedMusicPlayer(auto_play=False, config_file=config, **kwargs)
+        player = MediaPlayerFluere(auto_play=False, config_file=config, **kwargs)
         self.addCleanup(player.previewer.close)
         return player, config
 
@@ -1081,11 +1081,11 @@ class TestNewVisualizerStyles(unittest.TestCase):
     def _player(self):
         import tempfile
 
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        player = BlessedMusicPlayer(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
+        player = MediaPlayerFluere(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
         self.addCleanup(player.previewer.close)
         return player
 
@@ -1284,11 +1284,11 @@ class TestPromptCursor(unittest.TestCase):
     def _player(self):
         import tempfile
 
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        player = BlessedMusicPlayer(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
+        player = MediaPlayerFluere(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
         self.addCleanup(player.previewer.close)
         return player
 
@@ -1379,11 +1379,11 @@ class TestOpenPromptErrors(unittest.TestCase):
     def _player(self):
         import tempfile
 
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        player = BlessedMusicPlayer(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
+        player = MediaPlayerFluere(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
         self.addCleanup(player.previewer.close)
         return player
 
@@ -1455,11 +1455,11 @@ class TestOpenDialog(unittest.TestCase):
 
         from mpf_core.cache import SavedPlaylist
         from mpf_core.models import Track
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        player = BlessedMusicPlayer(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
+        player = MediaPlayerFluere(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
         self.addCleanup(player.previewer.close)
         saved = [SavedPlaylist(url, f"Mix {n}", 5, Track("t", "T"), 0.0) for n, url in enumerate(self.URLS)]
         self._saved = saved
@@ -1869,11 +1869,11 @@ class TestShortTerminalScreens(unittest.TestCase):
     def _player(self, height):
         import tempfile
 
-        from mpf_core.player import BlessedMusicPlayer
+        from mpf_core.player import MediaPlayerFluere
 
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        player = BlessedMusicPlayer(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
+        player = MediaPlayerFluere(auto_play=False, config_file=os.path.join(directory.name, "config.json"))
         self.addCleanup(player.previewer.close)
         TestOpenDialog._resize(player, 80, height)
         return player

@@ -4,8 +4,8 @@ import importlib
 from typing import Any
 
 __all__ = [
-    "BlessedMusicPlayer",
     "KittyPreviewer",
+    "MediaPlayerFluere",
     "PipeWireSpectrumAnalyzer",
     "PlaybackState",
     "RepeatMode",
@@ -36,7 +36,7 @@ _LOOKUP = {
     "Track": ".models",
     "TrackQueue": ".models",
     "format_time": ".models",
-    "BlessedMusicPlayer": ".player",
+    "MediaPlayerFluere": ".player",
     "KittyPreviewer": ".previewer",
     "PipeWireSpectrumAnalyzer": ".visualizer",
 }

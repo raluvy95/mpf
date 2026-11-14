@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 from mpf_core.fetcher import fetch_playlist_tracks
 from mpf_core.metadata import RedactingFilter, clean_text, parse_track, redact_urls, strip_noise
 from mpf_core.models import Track
-from mpf_core.player import BlessedMusicPlayer
+from mpf_core.player import MediaPlayerFluere
 
 OSC52 = "\x1b]52;c;ZXZpbA==\x07"  # would overwrite the clipboard in a terminal that honours OSC 52
 
@@ -71,7 +71,7 @@ class TestRedactUrls(unittest.TestCase):
         self.assertEqual(redact_urls("file:///etc/passwd"), "file:///etc/passwd")
 
     def test_mpv_log_lines_are_redacted_before_being_kept(self):
-        player = BlessedMusicPlayer(auto_play=False)
+        player = MediaPlayerFluere(auto_play=False)
         self.addCleanup(player.previewer.close)
         player._on_mpv_log("error", "ffmpeg", "https: HTTP error 403 Forbidden https://rr1.googlevideo.com/v?ip=9.9.9.9&sig=Q")
         self.assertNotIn("9.9.9.9", player._mpv_errors_text())
@@ -141,7 +141,7 @@ class TestIngestionPoints(unittest.TestCase):
             self.assertFalse(set(text) & set("\x1b\x07\x00"), text)
 
     def test_mpv_error_lines_are_cleaned_and_capped(self):
-        player = BlessedMusicPlayer(auto_play=False)
+        player = MediaPlayerFluere(auto_play=False)
         self.addCleanup(player.previewer.close)
         player._on_mpv_log("error", "ffmpeg", f"bad {OSC52}" + "y" * 1000)
         line = player._mpv_errors[-1]
@@ -149,7 +149,7 @@ class TestIngestionPoints(unittest.TestCase):
         self.assertLessEqual(len(line), 300)
 
     def test_mpv_end_file_error_text_is_cleaned_in_the_status_line(self):
-        player = BlessedMusicPlayer(auto_play=False)
+        player = MediaPlayerFluere(auto_play=False)
         self.addCleanup(player.previewer.close)
         player.queue.set_tracks([Track("a", "A"), Track("b", "B")])
         player.mpv = MagicMock()

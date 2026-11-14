@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import mpf
 from mpf_core import daemon
 from mpf_core.models import Track
-from mpf_core.player import BlessedMusicPlayer
+from mpf_core.player import MediaPlayerFluere
 
 PLAYLIST_URL = "https://www.youtube.com/playlist?list=PLabc"
 
@@ -37,7 +37,7 @@ class TestDetachRule(unittest.TestCase):
     """q and Ctrl-C both end in run()'s cleanup, which asks _should_detach()."""
 
     def _player(self):
-        player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         self.addCleanup(player.previewer.close)
         player.queue.set_tracks([Track(id="a", title="A", uploader="X")])
         player.queue.current_idx = 0
@@ -64,7 +64,7 @@ class TestDetachRule(unittest.TestCase):
         self.assertFalse(player._should_detach())
 
     def test_a_headless_player_never_detaches_again(self):
-        player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False, headless=True)
+        player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False, headless=True)
         self.addCleanup(player.previewer.close)
         player.queue.set_tracks([Track(id="a", title="A", uploader="X")])
         player.queue.current_idx = 0
@@ -184,7 +184,7 @@ class TestSpawn(unittest.TestCase):
 class TestHeadlessRun(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
     async def test_quit_command_stops_a_headless_player_without_touching_the_terminal(self):
         with patch("mpf_core.player.MPV") as mock_mpv:
-            player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False, headless=True)
+            player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False, headless=True)
             player.previewer.close()
             player.term = MagicMock()
             player.spectrum = MagicMock()
@@ -211,7 +211,7 @@ class TestHeadlessRun(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
     async def test_interactive_run_requests_a_handoff_only_when_it_should(self):
         for paused, expected in ((False, True), (True, False)):
             with self.subTest(paused=paused), patch("mpf_core.player.MPV"):
-                player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+                player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
                 player.previewer.close()
                 player.term = MagicMock()
                 player.term.inkey.return_value = "q"
@@ -264,7 +264,7 @@ class TestCli(unittest.TestCase):
         player.detach_on_exit = False
         fake_class = MagicMock(return_value=player)
         stop = MagicMock(side_effect=lambda: order.append("stop") or True)
-        with patch("mpf_core.BlessedMusicPlayer", fake_class, create=True):
+        with patch("mpf_core.MediaPlayerFluere", fake_class, create=True):
             self._main([PLAYLIST_URL], **{"mpf_core.daemon.stop": stop})
         self.assertEqual(order, ["stop", "run"])
 
@@ -274,7 +274,7 @@ class TestCli(unittest.TestCase):
         player.detach_on_exit = True
         player.handed_off = True
         with (
-            patch("mpf_core.BlessedMusicPlayer", MagicMock(return_value=player), create=True),
+            patch("mpf_core.MediaPlayerFluere", MagicMock(return_value=player), create=True),
             patch.object(sys, "argv", ["./mpf.py"]),
         ):
             output = self._main([PLAYLIST_URL], **{"mpf_core.daemon.stop": MagicMock(return_value=False)})
@@ -287,7 +287,7 @@ class TestCli(unittest.TestCase):
         player.detach_on_exit = False
         fake_class = MagicMock(return_value=player)
         stop = MagicMock(return_value=True)
-        with patch("mpf_core.BlessedMusicPlayer", fake_class, create=True):
+        with patch("mpf_core.MediaPlayerFluere", fake_class, create=True):
             self._main(
                 argv,
                 **{
@@ -331,7 +331,7 @@ class TestCli(unittest.TestCase):
         player.run = AsyncMock()
         player.detach_on_exit = False
         player.handed_off = False
-        with patch("mpf_core.BlessedMusicPlayer", MagicMock(return_value=player), create=True):
+        with patch("mpf_core.MediaPlayerFluere", MagicMock(return_value=player), create=True):
             output = self._main([PLAYLIST_URL], **{"mpf_core.daemon.stop": MagicMock(return_value=False)})
         self.assertNotIn("still running", output)
 
@@ -340,7 +340,7 @@ class TestCli(unittest.TestCase):
         player.run = AsyncMock()
         player.detach_on_exit = True
         player.handed_off = False
-        with patch("mpf_core.BlessedMusicPlayer", MagicMock(return_value=player), create=True):
+        with patch("mpf_core.MediaPlayerFluere", MagicMock(return_value=player), create=True):
             output = self._main([PLAYLIST_URL], **{"mpf_core.daemon.stop": MagicMock(return_value=False)})
         self.assertIn("could not", output.lower())
         self.assertNotIn("still running", output)
@@ -349,7 +349,7 @@ class TestCli(unittest.TestCase):
         player = MagicMock()
         player.run = AsyncMock()
         fake_class = MagicMock(return_value=player)
-        with patch("mpf_core.BlessedMusicPlayer", fake_class, create=True):
+        with patch("mpf_core.MediaPlayerFluere", fake_class, create=True):
             self._main(["--daemon", PLAYLIST_URL])
         kwargs = fake_class.call_args.kwargs
         self.assertTrue(kwargs["headless"])
@@ -361,7 +361,7 @@ class TestCli(unittest.TestCase):
 class TestHandoverCommand(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
     async def test_handover_returns_the_socket_and_stops_the_headless_player_without_killing_mpv(self):
         with patch("mpf_core.player.MPV") as mock_mpv:
-            player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False, headless=True)
+            player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False, headless=True)
             player.previewer.close()
             player.term = MagicMock()
             player.spectrum = MagicMock()
@@ -388,7 +388,7 @@ class TestHandoverCommand(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
 
     async def test_handover_is_refused_when_there_is_no_mpv(self):
         with patch("mpf_core.player.MPV", side_effect=RuntimeError("no mpv")):
-            player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False, headless=True)
+            player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False, headless=True)
             player.previewer.close()
             player.term = MagicMock()
             player.spectrum = MagicMock()
@@ -429,7 +429,7 @@ class TestHandoff(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
     """The TUI keeps its mpv playing and lets the daemon take it over; nothing is restarted."""
 
     def _tui(self):
-        player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=False)
+        player = MediaPlayerFluere(PLAYLIST_URL, auto_play=False)
         player.previewer.close()
         player.term = MagicMock()
         player.term.inkey.return_value = "q"
@@ -474,7 +474,7 @@ class TestHandoff(RuntimeDirTestCase, unittest.IsolatedAsyncioTestCase):
         stop.assert_called_once()
 
     def _daemon_player(self):
-        player = BlessedMusicPlayer(PLAYLIST_URL, auto_play=True, headless=True)
+        player = MediaPlayerFluere(PLAYLIST_URL, auto_play=True, headless=True)
         self.addCleanup(player.previewer.close)
         player.queue.set_tracks([Track(id="a", title="A", uploader="X"), Track(id="b", title="B", uploader="X")])
         player.mpv = MagicMock()

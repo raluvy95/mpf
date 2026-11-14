@@ -4,7 +4,7 @@ import unittest
 
 from mpf_core.models import RepeatMode, Track
 from mpf_core.mpris import NO_TRACK, build_metadata
-from mpf_core.player import BlessedMusicPlayer
+from mpf_core.player import MediaPlayerFluere
 
 
 class TestMpris(unittest.TestCase):
@@ -42,7 +42,7 @@ class TestMpris(unittest.TestCase):
 
         from mpf_core.mpris import MprisService
 
-        player = BlessedMusicPlayer(auto_play=False)
+        player = MediaPlayerFluere(auto_play=False)
         self.addCleanup(player.previewer.close)
         player.queue.set_tracks([Track("a", "Artist - Song", 10, "x")])
         service = MprisService(player)
@@ -64,7 +64,7 @@ class TestMpris(unittest.TestCase):
         self.assertEqual(build_metadata(track, 0, "/tmp/a b.jpg")["mpris:artUrl"].value, "file:///tmp/a%20b.jpg")
 
     def test_loop_status_round_trip(self):
-        player = BlessedMusicPlayer(auto_play=False)
+        player = MediaPlayerFluere(auto_play=False)
         for status in ("None", "Playlist", "Track"):
             player.set_loop_status(status)
             self.assertEqual(player.mpris_loop_status(), status)
@@ -72,7 +72,7 @@ class TestMpris(unittest.TestCase):
         self.assertEqual(player.queue.repeat_mode, RepeatMode.ONE)
 
     def test_playback_status(self):
-        player = BlessedMusicPlayer(auto_play=False)
+        player = MediaPlayerFluere(auto_play=False)
         self.assertEqual(player.mpris_playback_status(), "Stopped")
         player.queue.set_tracks([Track("a", "S", 10)])
         player._mpv_idle = False
@@ -81,7 +81,7 @@ class TestMpris(unittest.TestCase):
         self.assertEqual(player.mpris_playback_status(), "Paused")
 
     def test_shuffle_property_drives_the_queue(self):
-        player = BlessedMusicPlayer(auto_play=False)
+        player = MediaPlayerFluere(auto_play=False)
         player.queue.set_tracks([Track(str(i), f"S{i}", 10) for i in range(5)])
         player.set_shuffle(True)
         self.assertTrue(player.queue.shuffle_enabled)

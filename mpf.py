@@ -98,7 +98,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     # Lazy loading
     import asyncio
 
-    from mpf_core import BlessedMusicPlayer, daemon
+    from mpf_core import MediaPlayerFluere, daemon
 
     if cli_args.url == "quit" and not cli_args.daemon:
         try:
@@ -124,7 +124,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"Error: {err}.")
             raise SystemExit(1) from err
 
-    player = BlessedMusicPlayer(
+    player = MediaPlayerFluere(
         playlist_url=playlist_url,
         auto_play=cli_args.daemon or adopt_ipc is not None or not cli_args.no_auto_play,
         config_file=cli_args.config,

@@ -123,7 +123,7 @@ def _mpv_environment() -> Iterator[None]:
             os.environ["LD_LIBRARY_PATH"] = bundled_library_path
 
 
-class BlessedMusicPlayer:
+class MediaPlayerFluere:
     """Asyncio-driven TUI player using Blessed for true transparent terminal rendering."""
 
     SPECTRUM_CHARS = " .:-=+*#%@"
