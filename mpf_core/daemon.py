@@ -1,7 +1,7 @@
 """Background mode: a headless player that outlives the TUI, controlled over a private unix socket.
 
 The socket and a pid file live in $XDG_RUNTIME_DIR (0700, cleared at logout), or in the private cache
-directory without one. The only commands are ``ping`` and ``quit``; the socket is 0600.
+directory without one. The only commands are ``ping``, ``quit`` and ``handover`` (give the playing mpv to a returning TUI); the socket is 0600.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 SOCKET_NAME = "mpf-daemon.sock"
 PID_NAME = "mpf-daemon.pid"
 _COMMAND_LIMIT = 64
+_REPLY_LIMIT = 4096  # a reply can carry a socket path
 
 
 class DaemonAlreadyRunning(RuntimeError):
@@ -66,7 +67,7 @@ def send_command(command: str, timeout: float = 2.0) -> Optional[str]:
     try:
         client.connect(path)
         client.sendall(command.encode() + b"\n")
-        return client.makefile("rb").readline(_COMMAND_LIMIT).decode(errors="replace").strip()
+        return client.makefile("rb").readline(_REPLY_LIMIT).decode(errors="replace").strip()
     except FileNotFoundError:
         return None
     except ConnectionRefusedError:
@@ -138,7 +139,24 @@ class DaemonServer:
         _remove(self._pid_file)
 
 
-async def serve(on_quit: Callable[[], None]) -> DaemonServer:
+def handover(timeout: float = 10.0) -> Optional[str]:
+    """Ask a running background player to give up its playing mpv and exit; returns mpv's IPC socket.
+
+    None means there is nothing to take over (no daemon, or it could not hand over), so the caller should
+    fall back to ``stop()``. Raises TimeoutError if the daemon agreed but did not exit in time.
+    """
+    reply = send_command("handover")
+    if not reply or not reply.startswith("ok "):
+        return None
+    deadline = time.monotonic() + timeout
+    while is_running():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("the background player did not exit in time")
+        time.sleep(0.1)
+    return reply[3:]
+
+
+async def serve(on_quit: Callable[[], None], on_handover: Optional[Callable[[], Optional[str]]] = None) -> DaemonServer:
     """Listen for control commands; raises DaemonAlreadyRunning if another daemon is listening."""
     path = socket_path()
     if await asyncio.to_thread(is_running):  # off the loop: a probe must not block a loop that may be serving
@@ -154,6 +172,9 @@ async def serve(on_quit: Callable[[], None]) -> DaemonServer:
             elif command == "quit":
                 reply = "ok"
                 on_quit()
+            elif command == "handover":
+                socket_file = on_handover() if on_handover else None
+                reply = f"ok {socket_file}" if socket_file else "error: cannot hand over"
             else:
                 reply = "error: unknown command"
             writer.write(reply.encode() + b"\n")

@@ -148,6 +148,7 @@ class BlessedMusicPlayer:
         self.handed_off = False  # the background player took over this player's mpv, which is still playing
         self._adopt_ipc = adopt_ipc  # IPC socket of an mpv that is already playing and should be taken over
         self._adopting = False  # connected to that mpv and not yet resumed from the saved state
+        self._handing_over = False  # a returning TUI asked this background player to give up its mpv
         self._ipc_socket: Optional[str] = None
         self._daemon_server: Optional[daemon.DaemonServer] = None
         self.term = Terminal()
@@ -291,6 +292,10 @@ class BlessedMusicPlayer:
                 adopted = False
         if adopted:
             self._play_index(index, loaded=True)  # reloading it would be the audible gap this avoids
+            try:
+                self._is_paused = bool(self.mpv.pause) if self.mpv else False  # it may have been paused meanwhile
+            except Exception:
+                self._is_paused = False
         else:
             self._play_index(index, start_pos=start_pos)
 
@@ -309,12 +314,20 @@ class BlessedMusicPlayer:
     def _request_quit(self) -> None:
         self._running = False
 
+    def _request_handover(self) -> Optional[str]:
+        """A returning TUI wants this player's mpv: stop controlling it, leave it playing, and exit."""
+        if not self.mpv or not self._ipc_socket:
+            return None
+        self._handing_over = True
+        self._running = False
+        return self._ipc_socket
+
     async def run(self) -> None:
         """Run the main async event loop with Blessed context managers."""
         self._loop = asyncio.get_running_loop()
         if self.headless:
             try:
-                self._daemon_server = await daemon.serve(self._request_quit)
+                self._daemon_server = await daemon.serve(self._request_quit, self._request_handover)
             except daemon.DaemonAlreadyRunning as err:
                 logger.error("%s", err)
                 return
@@ -384,10 +397,11 @@ class BlessedMusicPlayer:
                 if self.detach_on_exit and self.mpv:
                     # Start the background player while mpv is still playing here, so there is no gap.
                     self.handed_off = await asyncio.to_thread(self._hand_off_to_daemon)
+                keep_mpv = self.handed_off or self._handing_over
                 if self.mpv:
                     try:
-                        if self.handed_off:
-                            self.mpv.mpv_process = None  # disconnect only: mpv keeps playing for the daemon
+                        if keep_mpv:
+                            self.mpv.mpv_process = None  # disconnect only: mpv keeps playing for the next owner
                         elif self.headless and self._adopt_ipc and self._ipc_socket == self._adopt_ipc:
                             self.mpv.command("quit")  # we did not start this mpv, so terminate() would leave it
                         self.mpv.terminate()
@@ -395,7 +409,7 @@ class BlessedMusicPlayer:
                         logger.exception("MPV shutdown failed")
                     finally:
                         self.mpv = None
-                if self._ipc_dir and not self.handed_off:
+                if self._ipc_dir and not keep_mpv:
                     shutil.rmtree(self._ipc_dir, ignore_errors=True)
                 if self._daemon_server:
                     self._daemon_server.close()

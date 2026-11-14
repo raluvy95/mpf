@@ -104,24 +104,30 @@ def main(argv: Optional[List[str]] = None) -> None:
         print("Stopped the MPF background player." if stopped else "MPF is not running in the background.")
         return
 
+    default_playlist = load_default_playlist(cli_args.config)
+    playlist_url = cli_args.url or default_playlist
+    adopt_ipc: Optional[str] = None
     if not cli_args.daemon:
-        # A background player left by an earlier session is taken over, so two never play at once.
+        # A background player left by an earlier session is taken over, so two never play at once. When it is
+        # playing what was asked for, its mpv is adopted and the music carries on; otherwise it is stopped.
         try:
-            daemon.stop()
+            if playlist_url == default_playlist and not cli_args.no_auto_play:
+                adopt_ipc = daemon.handover()
+            if adopt_ipc is None:
+                daemon.stop()
         except TimeoutError as err:
             print(f"Error: {err}.")
             raise SystemExit(1) from err
 
-    playlist_url = cli_args.url or load_default_playlist(cli_args.config)
     player = BlessedMusicPlayer(
         playlist_url=playlist_url,
-        auto_play=cli_args.daemon or not cli_args.no_auto_play,
+        auto_play=cli_args.daemon or adopt_ipc is not None or not cli_args.no_auto_play,
         config_file=cli_args.config,
         show_visualizer=False if cli_args.daemon or cli_args.no_visualizer else None,
         show_preview=not (cli_args.daemon or cli_args.no_preview),
         vim_mode=cli_args.vim,
         headless=cli_args.daemon,
-        adopt_ipc=cli_args.adopt_ipc if cli_args.daemon else None,
+        adopt_ipc=cli_args.adopt_ipc if cli_args.daemon else adopt_ipc,
     )
     try:
         asyncio.run(player.run())
