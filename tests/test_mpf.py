@@ -7,6 +7,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -409,6 +411,59 @@ class TestKittyPreviewer(unittest.TestCase):
                 previewer.render_many(placements[1:], fallback=False)  # scrolled: a tile left
                 self.assertEqual(clear.call_count, 1)
                 self.assertEqual(run.call_count, 7)
+
+    def test_a_slow_thumbnail_download_does_not_hold_up_exit(self):
+        # The pool this replaced was joined at interpreter exit, so quitting waited for urlopen's timeout.
+        code = """
+import sys, tempfile, time
+from unittest.mock import patch
+from mpf_core.models import Track
+from mpf_core.previewer import KittyPreviewer
+patch("mpf_core.previewer.urllib.request.urlopen", lambda *a, **k: time.sleep(5)).start()
+p = KittyPreviewer(thumbs_dir=tempfile.mkdtemp())
+p.request(Track("abc", "T"))
+time.sleep(0.2)
+p.close()
+"""
+        start = time.monotonic()
+        subprocess.run([sys.executable, "-c", code], check=True, timeout=30, cwd=os.path.dirname(os.path.dirname(__file__)) or ".")
+        self.assertLess(time.monotonic() - start, 3.0)
+
+    def test_leftovers_of_interrupted_downloads_are_cleaned_up(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stale = os.path.join(tmpdir, ".thumb-old")
+            fresh = os.path.join(tmpdir, ".thumb-new")
+            for path in (stale, fresh):
+                with open(path, "wb") as file:
+                    file.write(b"x")
+            old = time.time() - 2 * 3600
+            os.utime(stale, (old, old))
+            previewer = KittyPreviewer(thumbs_dir=tmpdir)  # cleans the cache when created
+            self.addCleanup(previewer.close)
+            self.assertFalse(os.path.exists(stale))
+            self.assertTrue(os.path.exists(fresh))  # may still be downloading in another MPF
+
+    def test_requests_are_deduplicated_and_finish(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previewer = KittyPreviewer(thumbs_dir=tmpdir)
+            self.addCleanup(previewer.close)
+            calls = []
+            release = threading.Event()
+
+            def download(track):
+                calls.append(track.id)
+                release.wait(5)
+
+            previewer._download = download
+            for _ in range(3):
+                previewer.request(Track("same", "T"))
+            release.set()
+            for _ in range(100):
+                if previewer.generation:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(calls, ["same"])
+            self.assertEqual(previewer.generation, 1)
 
     def test_render_skips_icat_terminal_autodetection(self):
         with tempfile.TemporaryDirectory() as tmpdir:

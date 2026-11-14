@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import logging
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -13,8 +14,6 @@ import tempfile
 import threading
 import time
 import urllib.request
-from concurrent.futures import Future, ThreadPoolExecutor
-from functools import partial
 from typing import List, Optional, Sequence, Tuple
 
 from mpf_core.models import Track
@@ -25,6 +24,8 @@ THUMBNAIL_MAX_AGE_SECONDS = 30 * 24 * 3600
 THUMBNAIL_CACHE_MAX_BYTES = 256 * 1024 * 1024
 THUMBNAIL_DOWNLOAD_MAX_BYTES = 10 * 1024 * 1024
 KITTY_RENDER_TIMEOUT_SECONDS = 5.0
+DOWNLOAD_WORKERS = 2
+STALE_DOWNLOAD_SECONDS = 3600.0  # older unfinished downloads are leftovers, not in progress
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +52,12 @@ class KittyPreviewer:
         self._current_rendered: Optional[Tuple[Tuple[str, int, int, int, int], ...]] = None
         self.max_age_seconds = max_age_seconds
         self.max_cache_bytes = max_cache_bytes
-        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mpf-thumbnail")
-        self._pending: dict[str, Future[None]] = {}
+        # Downloads run on daemon threads: the interpreter never waits for them, so quitting is not held up
+        # by a slow thumbnail (urlopen may take its full timeout). They start with the first request.
+        self._jobs: "queue.Queue[Optional[Track]]" = queue.Queue()
+        self._workers: List[threading.Thread] = []
+        self._closed = False
+        self._pending: set[str] = set()
         self._lock = threading.Lock()
         self.generation = 0
         os.makedirs(self.thumbs_dir, exist_ok=True)
@@ -93,18 +98,30 @@ class KittyPreviewer:
                 return
         except OSError:
             pass
-        key = track.id
         with self._lock:
-            if key in self._pending:
+            if self._closed or track.id in self._pending:
                 return
-            future = self._executor.submit(self._download, track)
-            self._pending[key] = future
-        future.add_done_callback(partial(self._download_finished, key))
+            self._pending.add(track.id)
+            if not self._workers:
+                for index in range(DOWNLOAD_WORKERS):
+                    worker = threading.Thread(target=self._work, name=f"mpf-thumbnail-{index}", daemon=True)
+                    worker.start()
+                    self._workers.append(worker)
+        self._jobs.put(track)
 
-    def _download_finished(self, track_id: str, _future: Future[None]) -> None:
-        with self._lock:
-            self._pending.pop(track_id, None)
-            self.generation += 1
+    def _work(self) -> None:
+        while True:
+            track = self._jobs.get()
+            if track is None:
+                return
+            try:
+                self._download(track)
+            except Exception:  # a worker must survive one bad download
+                logger.exception("Thumbnail download failed for %s", track.id)
+            finally:
+                with self._lock:
+                    self._pending.discard(track.id)
+                    self.generation += 1
 
     def _download(self, track: Track) -> None:
         local_path = self._thumbnail_path(track)
@@ -148,6 +165,14 @@ class KittyPreviewer:
             logger.warning("Unable to scan thumbnail cache: %s", err)
             return
         for entry in entries:
+            if entry.name.startswith(".thumb-") and entry.is_file():
+                # A download cut short when MPF exited mid-way leaves its temporary file behind.
+                try:
+                    if now - entry.stat().st_mtime > STALE_DOWNLOAD_SECONDS:
+                        os.unlink(entry.path)
+                except OSError as err:
+                    logger.debug("Unable to remove stale download %s: %s", entry.path, err)
+                continue
             if not entry.is_file() or not entry.name.endswith(".jpg"):
                 continue
             try:
@@ -239,8 +264,17 @@ class KittyPreviewer:
             logger.warning("Unable to render Kitty thumbnail: %s", err)
 
     def close(self) -> None:
-        """Stop accepting work and cancel thumbnail downloads not yet started."""
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        """Stop accepting work and drop downloads not yet started; one in progress never delays exit."""
+        with self._lock:
+            self._closed = True
+            workers = list(self._workers)
+        while True:
+            try:
+                self._jobs.get_nowait()
+            except queue.Empty:
+                break
+        for _worker in workers:
+            self._jobs.put(None)
 
     def clear(self) -> None:
         """Clear Kitty graphics from terminal screen."""
